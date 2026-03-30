@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Receipt - INV-{{ "%04d"|format(invoice.invoice_id) }}</title>
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            max-width: 350px;
+            margin: 20px auto;
+            padding: 10px;
+        }
+        .receipt-header { text-align: center; border-bottom: 2px dashed #000; padding-bottom: 10px; margin-bottom: 10px; }
+        .receipt-header h3 { margin: 0; font-size: 18px; }
+        .receipt-header p { margin: 2px 0; font-size: 12px; }
+        .receipt-info { margin-bottom: 10px; font-size: 12px; }
+        .receipt-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+        .receipt-table th { border-bottom: 1px dashed #000; text-align: left; padding: 4px 0; font-size: 12px; }
+        .receipt-table td { padding: 3px 0; font-size: 13px; }
+        .receipt-table .text-right { text-align: right; }
+        .receipt-table .text-center { text-align: center; }
+        .receipt-totals { border-top: 1px dashed #000; padding-top: 8px; margin-top: 5px; }
+        .receipt-totals table { width: 100%; }
+        .receipt-totals td { padding: 2px 0; font-size: 13px; }
+        .receipt-totals .grand-total { font-size: 16px; font-weight: bold; border-top: 2px dashed #000; padding-top: 5px; }
+        .receipt-footer { text-align: center; border-top: 2px dashed #000; padding-top: 10px; margin-top: 15px; font-size: 12px; }
+        .btn-print { display: block; width: 100%; padding: 10px; margin-top: 20px; font-size: 16px; cursor: pointer; background: #198754; color: white; border: none; border-radius: 5px; }
+        .btn-back { display: block; width: 100%; padding: 8px; margin-top: 10px; font-size: 14px; cursor: pointer; background: #6c757d; color: white; border: none; border-radius: 5px; text-align: center; text-decoration: none; }
+        .disc-line { font-size: 11px; color: #666; }
+        @media print {
+            .no-print { display: none !important; }
+            body { margin: 0; max-width: 80mm; }
+        }
+    </style>
+</head>
+<body>
+    <div class="receipt-header">
+        <h3>{{ business_name }}</h3>
+        <p>{{ business_address }}</p>
+        <p>Tel: {{ business_phone }}</p>
+    </div>
+
+    <div class="receipt-info">
+        <strong>Invoice:</strong> INV-{{ "%04d"|format(invoice.invoice_id) }}<br>
+        <strong>Date:</strong> {{ invoice.created_at.strftime('%Y-%m-%d %H:%M') if invoice.created_at else '-' }}<br>
+        <strong>Payment:</strong> {{ invoice.payment_method }}
+    </div>
+
+    <table class="receipt-table">
+        <thead>
+            <tr>
+                <th>Item</th>
+                <th class="text-center">Qty</th>
+                <th class="text-right">Price</th>
+                <th class="text-right">Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td>{{ item.product_name }}</td>
+                <td class="text-center">{{ item.quantity }}</td>
+                <td class="text-right">{{ "{:,.2f}".format(item.counter_price) }}</td>
+                <td class="text-right">{{ "{:,.2f}".format(item.line_total) }}</td>
+            </tr>
+            {% if item.discount_amount %}
+            <tr class="disc-line">
+                <td colspan="4">&nbsp;&nbsp;Disc: -{{ "{:,.2f}".format(item.discount_amount) }}</td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="receipt-totals">
+        <table>
+            <tr>
+                <td>Subtotal:</td>
+                <td class="text-right">{{ "{:,.2f}".format(invoice.subtotal) }}</td>
+            </tr>
+            {% if invoice.discount_total %}
+            <tr>
+                <td>Discount:</td>
+                <td class="text-right">-{{ "{:,.2f}".format(invoice.discount_total) }}</td>
+            </tr>
+            {% endif %}
+            {% if invoice.tax_rate and invoice.tax_amount %}
+            <tr>
+                <td>Tax ({{ (invoice.tax_rate * 100)|int }}%):</td>
+                <td class="text-right">{{ "{:,.2f}".format(invoice.tax_amount) }}</td>
+            </tr>
+            {% endif %}
+            <tr class="grand-total">
+                <td>TOTAL:</td>
+                <td class="text-right">{{ currency }} {{ "{:,.2f}".format(invoice.total) }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="receipt-footer">
+        <p>Thank you for your purchase!</p>
+        <p style="font-size:10px; margin-top:6px;">Goods once sold are not returnable without bill.<br>Damaged fridge and loose items are not returnable.</p>
+        <p>{{ business_name }}</p>
+    </div>
+
+    <button class="btn-print no-print" onclick="window.print()">Print Receipt</button>
+    <a href="{{ url_for('invoices') }}" class="btn-back no-print">Back to Invoices</a>
+    <a href="{{ url_for('invoice_create') }}" class="btn-back no-print" style="background:#0d6efd">New Sale</a>
+</body>
+</html>
