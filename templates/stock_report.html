@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Stock Report{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-clipboard-data"></i> Stock Report</h2>
+
+{% if products %}
+<div class="table-responsive">
+    <table class="table table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>ID</th>
+                <th>Product Name</th>
+                <th>Category</th>
+                <th>Stock Level</th>
+                <th>Status</th>
+                <th>Purchase ({{ currency }})</th>
+                <th>Counter ({{ currency }})</th>
+                <th>MRP ({{ currency }})</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in products %}
+            <tr class="{% if p.quantity == 0 %}table-danger{% elif p.quantity <= threshold %}table-warning{% endif %}">
+                <td>{{ p.product_id }}</td>
+                <td>{{ p.name }}</td>
+                <td>{{ p.category or '-' }}</td>
+                <td class="fw-bold">{{ p.quantity }}</td>
+                <td>
+                    {% if p.quantity == 0 %}
+                        <span class="badge bg-danger">Out of Stock</span>
+                    {% elif p.quantity <= threshold %}
+                        <span class="badge bg-warning text-dark">Low Stock</span>
+                    {% else %}
+                        <span class="badge bg-success">In Stock</span>
+                    {% endif %}
+                </td>
+                <td>{{ "{:,.2f}".format(p.purchase_price) }}</td>
+                <td>{{ "{:,.2f}".format(p.counter_price) }}</td>
+                <td>{{ "{:,.2f}".format(p.retail_price) if p.retail_price else '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">No products in inventory.</div>
+{% endif %}
+{% endblock %}
