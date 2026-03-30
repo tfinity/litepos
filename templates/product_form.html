@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if product else "Add" }} Product{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h4>{{ "Edit" if product else "Add New" }} Product</h4>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="row g-3">
+                        <div class="col-md-8">
+                            <label class="form-label">Product Name *</label>
+                            <input type="text" name="name" class="form-control" required
+                                   value="{{ product.name if product else '' }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Category</label>
+                            <input type="text" name="category" class="form-control" list="categoryList"
+                                   value="{{ product.category if product else '' }}">
+                            <datalist id="categoryList">
+                                {% for cat in categories %}
+                                <option value="{{ cat }}">
+                                {% endfor %}
+                            </datalist>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Purchase Price *</label>
+                            <input type="number" name="purchase_price" class="form-control" step="0.01" min="0" required
+                                   value="{{ product.purchase_price if product else '' }}"
+                                   placeholder="Cost / buying price">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Counter Price *</label>
+                            <input type="number" name="counter_price" class="form-control" step="0.01" min="0" required
+                                   value="{{ product.counter_price if product else '' }}"
+                                   placeholder="Selling price">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">MRP</label>
+                            <input type="number" name="retail_price" class="form-control" step="0.01" min="0"
+                                   value="{{ product.retail_price if product else '' }}"
+                                   placeholder="Maximum retail price">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Quantity in Stock *</label>
+                            <input type="number" name="quantity" class="form-control" min="0" required
+                                   value="{{ product.quantity if product else '' }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Barcode / SKU</label>
+                            <input type="text" name="barcode" class="form-control"
+                                   value="{{ product.barcode if product else '' }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Expiry Date</label>
+                            <input type="date" name="expiry_date" class="form-control"
+                                   value="{{ product.expiry_date if product and product.expiry_date else '' }}">
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-circle"></i> {{ "Update" if product else "Add" }} Product
+                        </button>
+                        <a href="{{ url_for('products') }}" class="btn btn-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

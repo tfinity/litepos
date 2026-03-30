@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Products{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>Products</h2>
+    <div>
+        <a href="{{ url_for('product_import') }}" class="btn btn-outline-primary me-2">
+            <i class="bi bi-upload"></i> Import from Excel
+        </a>
+        <a href="{{ url_for('product_add') }}" class="btn btn-success">
+            <i class="bi bi-plus-circle"></i> Add Product
+        </a>
+    </div>
+</div>
+
+<div class="mb-3">
+    <input type="text" class="form-control" id="productSearch"
+           placeholder="Search by name or barcode..." onkeyup="filterTable('productSearch', 'productTable')">
+</div>
+
+{% if products %}
+<div class="table-responsive">
+    <table class="table table-hover" id="productTable">
+        <thead class="table-dark">
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Category</th>
+                <th>Purchase ({{ currency }})</th>
+                <th>Counter ({{ currency }})</th>
+                <th>MRP ({{ currency }})</th>
+                <th>Stock</th>
+                <th>Barcode</th>
+                <th>Expiry</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in products %}
+            <tr class="{% if p.expiry_date and p.expiry_date < today %}table-danger{% elif p.expiry_date and (p.expiry_date - today).days <= 30 %}table-warning{% endif %}">
+                <td>{{ p.product_id }}</td>
+                <td>{{ p.name }}</td>
+                <td>{{ p.category or '-' }}</td>
+                <td>{{ "{:,.2f}".format(p.purchase_price) }}</td>
+                <td>{{ "{:,.2f}".format(p.counter_price) }}</td>
+                <td>{{ "{:,.2f}".format(p.retail_price) if p.retail_price else '-' }}</td>
+                <td class="{% if p.quantity <= threshold %}text-danger fw-bold{% endif %}">
+                    {{ p.quantity }}
+                    {% if p.quantity == 0 %}<span class="badge bg-danger">OUT</span>{% endif %}
+                    {% if p.quantity > 0 and p.quantity <= threshold %}<span class="badge bg-warning text-dark">LOW</span>{% endif %}
+                </td>
+                <td>{{ p.barcode or '-' }}</td>
+                <td>{{ p.expiry_date or '-' }}</td>
+                <td>
+                    <a href="{{ url_for('product_edit', product_id=p.product_id) }}"
+                       class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i></a>
+                    <form method="POST" action="{{ url_for('product_delete', product_id=p.product_id) }}"
+                          class="d-inline" onsubmit="return confirm('Delete this product?')">
+                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">No products yet. <a href="{{ url_for('product_add') }}">Add your first product</a>.</div>
+{% endif %}
+{% endblock %}

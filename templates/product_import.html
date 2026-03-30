@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Import Products{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h4>Import Products from Excel</h4>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Upload an Excel file (.xlsx) with product data. Expected columns:</p>
+                <table class="table table-sm table-bordered mb-3">
+                    <thead class="table-light">
+                        <tr><th>Column</th><th>Maps To</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>A - Sr.No</td><td>(ignored)</td></tr>
+                        <tr><td>B - Product Name</td><td>Product Name</td></tr>
+                        <tr><td>C - Packing</td><td>Appended to name</td></tr>
+                        <tr><td>D - Qty</td><td>Stock Quantity</td></tr>
+                        <tr><td>E - Price</td><td>Purchase Price</td></tr>
+                        <tr><td>F - Company</td><td>Category</td></tr>
+                        <tr><td>G - Expiry</td><td>Expiry Date</td></tr>
+                        <tr><td>H - MRP</td><td>MRP (Retail Price)</td></tr>
+                        <tr><td>I - Sale Price</td><td>Counter Price</td></tr>
+                    </tbody>
+                </table>
+                <form method="POST" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label class="form-label">Select Excel File</label>
+                        <input type="file" name="file" class="form-control" accept=".xlsx,.xls" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-upload"></i> Import Products
+                    </button>
+                    <a href="{{ url_for('products') }}" class="btn btn-secondary">Cancel</a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
