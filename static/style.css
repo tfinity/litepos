@@ -1,0 +1,76 @@
+/* POS System Custom Styles */
+
+body {
+    background-color: #f8f9fa;
+}
+
+.card {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+    border: none;
+}
+
+.card-footer {
+    background: rgba(0,0,0,0.03);
+}
+
+.navbar-brand i {
+    font-size: 1.3rem;
+}
+
+/* Stock badges */
+.stock-critical {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+/* Receipt print styles */
+@media print {
+    .no-print {
+        display: none !important;
+    }
+    body {
+        font-family: 'Courier New', monospace;
+        font-size: 12px;
+        width: 80mm;
+        margin: 0;
+    }
+    .receipt-header, .receipt-footer {
+        text-align: center;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+}
+
+/* Dashboard cards */
+.card.text-bg-primary .card-footer,
+.card.text-bg-danger .card-footer,
+.card.text-bg-warning .card-footer,
+.card.text-bg-success .card-footer {
+    background: rgba(0,0,0,0.15);
+    border-top: 1px solid rgba(255,255,255,0.2);
+}
+
+/* Table improvements */
+.table th {
+    white-space: nowrap;
+}
+
+/* Search results dropdown */
+#searchResults {
+    position: absolute;
+    z-index: 1000;
+    width: calc(100% - 2rem);
+    max-height: 300px;
+    overflow-y: auto;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.15);
+}
+
+#searchResults .list-group-item {
+    cursor: pointer;
+}
+
+#searchResults .list-group-item:hover {
+    background-color: #e9ecef;
+}
