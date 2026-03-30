@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Invoices{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>Invoices</h2>
+    <a href="{{ url_for('invoice_create') }}" class="btn btn-primary">
+        <i class="bi bi-cart-plus"></i> New Sale
+    </a>
+</div>
+
+{% if invoices %}
+<div class="table-responsive">
+    <table class="table table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>Invoice #</th>
+                <th>Date</th>
+                <th>Subtotal</th>
+                <th>Discount</th>
+                {% if invoices[0].tax_rate %}<th>Tax</th>{% endif %}
+                <th>Total ({{ currency }})</th>
+                <th>Payment</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for inv in invoices %}
+            <tr>
+                <td><strong>INV-{{ "%04d"|format(inv.invoice_id) }}</strong></td>
+                <td>{{ inv.created_at.strftime('%Y-%m-%d %H:%M') if inv.created_at else '-' }}</td>
+                <td>{{ "{:,.2f}".format(inv.subtotal) }}</td>
+                <td class="text-success">
+                    {% if inv.discount_total %}-{{ "{:,.2f}".format(inv.discount_total) }}{% else %}-{% endif %}
+                </td>
+                {% if inv.tax_rate %}<td>{{ "{:,.2f}".format(inv.tax_amount) }}</td>{% endif %}
+                <td class="fw-bold">{{ "{:,.2f}".format(inv.total) }}</td>
+                <td><span class="badge bg-secondary">{{ inv.payment_method }}</span></td>
+                <td>
+                    <a href="{{ url_for('invoice_detail', invoice_id=inv.invoice_id) }}"
+                       class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i> View</a>
+                    <a href="{{ url_for('invoice_receipt', invoice_id=inv.invoice_id) }}"
+                       class="btn btn-sm btn-outline-success"><i class="bi bi-printer"></i> Receipt</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">No invoices yet. <a href="{{ url_for('invoice_create') }}">Create your first sale</a>.</div>
+{% endif %}
+{% endblock %}
