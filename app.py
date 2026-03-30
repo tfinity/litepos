@@ -1,5 +1,6 @@
 """Flask POS Application - Excel-based Point of Sale System."""
 
+import os
 from datetime import date
 
 from flask import (
@@ -10,16 +11,17 @@ from flask import (
 import excel_db
 
 app = Flask(__name__)
-app.secret_key = "pos-system-secret-key-change-in-production"
+app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
 
-# Configuration
-TAX_RATE = 0.0   # 0% tax (adjust if needed)
-LOW_STOCK_THRESHOLD = 10
-EXPIRY_WARNING_DAYS = 30
-BUSINESS_NAME = "ANIMAL NEXUS PHARMACY"
-BUSINESS_ADDRESS = "KOT ARIAN STOP JIA BAGGA, ROAD, Lahore, 54000"
-BUSINESS_PHONE = "+923299406159"
-CURRENCY = "PKR"
+# Configuration - override via environment variables or edit directly
+TAX_RATE = float(os.environ.get("TAX_RATE", "0.0"))
+LOW_STOCK_THRESHOLD = int(os.environ.get("LOW_STOCK_THRESHOLD", "10"))
+EXPIRY_WARNING_DAYS = int(os.environ.get("EXPIRY_WARNING_DAYS", "30"))
+BUSINESS_NAME = os.environ.get("BUSINESS_NAME", "My Pharmacy")
+BUSINESS_ADDRESS = os.environ.get("BUSINESS_ADDRESS", "123 Main Street")
+BUSINESS_PHONE = os.environ.get("BUSINESS_PHONE", "+1 000 000 0000")
+CURRENCY = os.environ.get("CURRENCY", "USD")
+RECEIPT_FOOTER = os.environ.get("RECEIPT_FOOTER", "")
 
 # Initialize Excel workbook on startup
 excel_db.init_workbook()
@@ -187,7 +189,8 @@ def invoice_receipt(invoice_id):
                            invoice=invoice, items=items,
                            business_name=BUSINESS_NAME,
                            business_address=BUSINESS_ADDRESS,
-                           business_phone=BUSINESS_PHONE)
+                           business_phone=BUSINESS_PHONE,
+                           receipt_footer=RECEIPT_FOOTER)
 
 
 # ── API Endpoints ────────────────────────────────────────────────────

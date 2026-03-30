@@ -101,7 +101,9 @@
 
     <div class="receipt-footer">
         <p>Thank you for your purchase!</p>
-        <p style="font-size:10px; margin-top:6px;">Goods once sold are not returnable without bill.<br>Damaged fridge and loose items are not returnable.</p>
+        {% if receipt_footer %}
+        <p style="font-size:10px; margin-top:6px;">{{ receipt_footer }}</p>
+        {% endif %}
         <p>{{ business_name }}</p>
     </div>
 

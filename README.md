@@ -1,4 +1,4 @@
-# ANIMAL NEXUS PHARMACY - POS System
+# POS System
 
 A Point of Sale system built with Python Flask and Excel (openpyxl) as the data backend.
 
@@ -15,13 +15,14 @@ A Point of Sale system built with Python Flask and Excel (openpyxl) as the data 
 ## Tech Stack
 
 - **Backend:** Python, Flask
-- **Data Storage:** Excel (openpyxl) - no database required
-- **Frontend:** HTML, CSS, JavaScript, Bootstrap 5
+- **Data Storage:** Excel via openpyxl - no database required
+- **Frontend:** HTML, CSS, JavaScript, Bootstrap 5 (CDN)
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env   # Edit with your business details
 python3 app.py
 ```
 
@@ -29,18 +30,23 @@ Open http://localhost:5000
 
 ## Configuration
 
-Edit the top of `app.py` to change:
+Copy `.env.example` to `.env` and set your values, or edit the defaults at the top of `app.py`:
 
-- `BUSINESS_NAME` - Store name
-- `BUSINESS_ADDRESS` - Store address
-- `BUSINESS_PHONE` - Contact number
-- `CURRENCY` - Currency code (default: PKR)
-- `TAX_RATE` - Tax percentage (default: 0)
-- `LOW_STOCK_THRESHOLD` - Low stock alert level (default: 10)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SECRET_KEY` | Flask session secret | Random on each start |
+| `BUSINESS_NAME` | Store name shown in UI and receipts | My Pharmacy |
+| `BUSINESS_ADDRESS` | Address on receipts | 123 Main Street |
+| `BUSINESS_PHONE` | Phone on receipts | +1 000 000 0000 |
+| `CURRENCY` | Currency code | USD |
+| `TAX_RATE` | Tax rate as decimal (e.g. 0.16 = 16%) | 0.0 |
+| `LOW_STOCK_THRESHOLD` | Stock level for low-stock alerts | 10 |
+| `EXPIRY_WARNING_DAYS` | Days before expiry to trigger alerts | 30 |
+| `RECEIPT_FOOTER` | Custom message on receipt footer | (empty) |
 
 ## License
 
-MIT
+MIT - see [LICENSE](LICENSE)
 
 ---
 
