@@ -174,13 +174,19 @@ document.getElementById('searchInput').addEventListener('input', function() {
                     div.innerHTML = '<div class="list-group-item text-muted">No products found</div>';
                     return;
                 }
-                div.innerHTML = products.map(p =>
-                    `<button class="list-group-item list-group-item-action" onclick='selectProduct(${JSON.stringify(p)})'>
-                        <strong>${p.name}</strong>
+                div.innerHTML = products.map((p, idx) => {
+                    const name = p.name.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const barcode = p.barcode ? p.barcode.replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+                    return `<button class="list-group-item list-group-item-action" data-product-idx="${idx}">
+                        <strong>${name}</strong>
                         <small class="text-muted ms-2">Counter: ${CURRENCY} ${parseFloat(p.counter_price).toFixed(2)} | MRP: ${CURRENCY} ${parseFloat(p.retail_price).toFixed(2)} | Stock: ${p.quantity}</small>
-                        ${p.barcode ? `<small class="text-muted ms-2">[${p.barcode}]</small>` : ''}
-                    </button>`
-                ).join('');
+                        ${barcode ? `<small class="text-muted ms-2">[${barcode}]</small>` : ''}
+                    </button>`;
+                }).join('');
+                // Bind click handlers safely (avoids quote issues in product names)
+                div.querySelectorAll('[data-product-idx]').forEach(btn => {
+                    btn.addEventListener('click', () => selectProduct(products[parseInt(btn.dataset.productIdx)]));
+                });
             });
     }, 300);
 });
