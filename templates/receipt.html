@@ -31,7 +31,16 @@
         .disc-line { font-size: 11px; color: #666; }
         @media print {
             .no-print { display: none !important; }
-            body { margin: 0; max-width: 80mm; }
+            @page {
+                size: 80mm auto;
+                margin: 2mm;
+            }
+            html, body {
+                width: 80mm;
+                margin: 0;
+                padding: 0;
+                font-size: 11px;
+            }
         }
     </style>
 </head>
