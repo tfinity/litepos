@@ -143,9 +143,20 @@ def expiry_report():
 
 # ── Invoices ─────────────────────────────────────────────────────────
 
+def _attach_customer(invoice, cmap):
+    """Mutate invoice dict with optional ``customer`` profile (or None)."""
+    cid = excel_db.normalize_customer_id(invoice.get("customer_id"))
+    invoice["customer"] = cmap.get(cid) if cid is not None else None
+
+
 @app.route("/invoices")
 def invoices():
-    all_invoices = excel_db.get_all_invoices()
+    cmap = excel_db.customer_lookup()
+    all_invoices = []
+    for inv in excel_db.get_all_invoices():
+        inv = dict(inv)
+        _attach_customer(inv, cmap)
+        all_invoices.append(inv)
     return render_template("invoices.html", invoices=all_invoices)
 
 
@@ -159,7 +170,10 @@ def invoice_create():
             return jsonify({"error": "No items in invoice"}), 400
         try:
             invoice_id = excel_db.create_invoice(
-                items, TAX_RATE, payment_method
+                items,
+                TAX_RATE,
+                payment_method,
+                customer_id=data.get("customer_id"),
             )
             return jsonify({"invoice_id": invoice_id})
         except ValueError as e:
@@ -176,6 +190,9 @@ def invoice_detail(invoice_id):
     if not invoice:
         flash("Invoice not found.", "danger")
         return redirect(url_for("invoices"))
+    invoice = dict(invoice)
+    cmap = excel_db.customer_lookup()
+    _attach_customer(invoice, cmap)
     items = excel_db.get_invoice_items(invoice_id)
     return render_template("invoice_detail.html",
                            invoice=invoice, items=items)
@@ -187,6 +204,9 @@ def invoice_receipt(invoice_id):
     if not invoice:
         flash("Invoice not found.", "danger")
         return redirect(url_for("invoices"))
+    invoice = dict(invoice)
+    cmap = excel_db.customer_lookup()
+    _attach_customer(invoice, cmap)
     items = excel_db.get_invoice_items(invoice_id)
     return render_template("receipt.html",
                            invoice=invoice, items=items,
@@ -197,6 +217,111 @@ def invoice_receipt(invoice_id):
 
 
 # ── API Endpoints ────────────────────────────────────────────────────
+
+# ── Customers ────────────────────────────────────────────────────────
+
+
+@app.route("/customers")
+def customers_list():
+    customers = excel_db.get_all_customers()
+    cmap = excel_db.customer_lookup()
+    inv_counts = {cid: 0 for cid in cmap}
+    for inv in excel_db.get_all_invoices():
+        cid = excel_db.normalize_customer_id(inv.get("customer_id"))
+        if cid is not None and cid in inv_counts:
+            inv_counts[cid] += 1
+    return render_template(
+        "customers.html",
+        customers=customers,
+        inv_counts=inv_counts,
+    )
+
+
+@app.route("/customers/add", methods=["GET", "POST"])
+def customer_add():
+    if request.method == "POST":
+        data = {
+            "name": request.form.get("name", ""),
+            "phone": request.form.get("phone", ""),
+            "email": request.form.get("email", ""),
+            "address": request.form.get("address", ""),
+            "tax_id": request.form.get("tax_id", ""),
+            "notes": request.form.get("notes", ""),
+        }
+        if not (data["name"] or "").strip():
+            flash("Name is required.", "danger")
+            return render_template("customer_form.html", customer=None, data=data)
+        excel_db.add_customer(data)
+        flash("Customer added.", "success")
+        return redirect(url_for("customers_list"))
+    return render_template("customer_form.html", customer=None, data=None)
+
+
+@app.route("/customers/<int:customer_id>/edit", methods=["GET", "POST"])
+def customer_edit(customer_id):
+    customer = excel_db.get_customer(customer_id)
+    if not customer:
+        flash("Customer not found.", "danger")
+        return redirect(url_for("customers_list"))
+    if request.method == "POST":
+        data = {
+            "name": request.form.get("name", ""),
+            "phone": request.form.get("phone", ""),
+            "email": request.form.get("email", ""),
+            "address": request.form.get("address", ""),
+            "tax_id": request.form.get("tax_id", ""),
+            "notes": request.form.get("notes", ""),
+        }
+        if not (data["name"] or "").strip():
+            flash("Name is required.", "danger")
+            return render_template("customer_form.html", customer=customer, data=data)
+        excel_db.update_customer(customer_id, data)
+        flash("Customer updated.", "success")
+        return redirect(url_for("customers_list"))
+    return render_template("customer_form.html", customer=customer, data=None)
+
+
+@app.route("/customers/<int:customer_id>/delete", methods=["POST"])
+def customer_delete(customer_id):
+    try:
+        excel_db.delete_customer(customer_id)
+        flash("Customer deleted.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("customers_list"))
+
+
+@app.route("/customers/<int:customer_id>")
+def customer_detail(customer_id):
+    customer = excel_db.get_customer(customer_id)
+    if not customer:
+        flash("Customer not found.", "danger")
+        return redirect(url_for("customers_list"))
+    invoices = excel_db.get_invoices_for_customer(customer_id)
+    aggregates = excel_db.get_customer_product_aggregates(customer_id)
+    total_qty = sum(a["total_qty"] for a in aggregates)
+    total_lines_amount = sum(a["total_amount"] for a in aggregates)
+    revenue = sum(float(i["total"] or 0) for i in invoices)
+    return render_template(
+        "customer_detail.html",
+        customer=customer,
+        invoices=invoices,
+        aggregates=aggregates,
+        total_qty=total_qty,
+        total_lines_amount=round(total_lines_amount, 2),
+        revenue=round(revenue, 2),
+    )
+
+
+@app.route("/customers/sales-summary")
+def customers_sales_summary():
+    rows, walk_in = excel_db.get_sales_summary_by_customer()
+    return render_template(
+        "customers_sales_summary.html",
+        rows=rows,
+        walk_in=walk_in,
+    )
+
 
 @app.route("/api/products/search")
 def api_product_search():
@@ -210,6 +335,43 @@ def api_product_search():
         if r.get("created_at"):
             r["created_at"] = str(r["created_at"])
     return jsonify(results)
+
+
+def _customer_to_json(c):
+    if not c:
+        return None
+    out = dict(c)
+    ca = out.get("created_at")
+    if hasattr(ca, "isoformat"):
+        out["created_at"] = ca.isoformat()
+    return out
+
+
+@app.route("/api/customers/search")
+def api_customers_search():
+    q = request.args.get("q", "")
+    if len(q) < 1:
+        return jsonify([])
+    results = excel_db.search_customers(q)
+    return jsonify([_customer_to_json(c) for c in results])
+
+
+@app.route("/api/customers", methods=["POST"])
+def api_customers_create():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name is required"}), 400
+    cid = excel_db.add_customer({
+        "name": name,
+        "phone": data.get("phone", ""),
+        "email": data.get("email", ""),
+        "address": data.get("address", ""),
+        "tax_id": data.get("tax_id", ""),
+        "notes": data.get("notes", ""),
+    })
+    c = excel_db.get_customer(cid)
+    return jsonify({"customer": _customer_to_json(c)})
 
 
 @app.route("/products/import", methods=["GET", "POST"])

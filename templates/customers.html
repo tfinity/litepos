@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Customers{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2><i class="bi bi-people"></i> Customers</h2>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('customers_sales_summary') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-graph-up"></i> Sales summary
+        </a>
+        <a href="{{ url_for('customer_add') }}" class="btn btn-primary">
+            <i class="bi bi-person-plus"></i> Add customer
+        </a>
+    </div>
+</div>
+
+{% if customers %}
+<div class="table-responsive">
+    <table class="table table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>Name</th>
+                <th>Phone</th>
+                <th>Email</th>
+                <th class="text-center">Invoices</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in customers %}
+            <tr>
+                <td><strong>{{ c.name }}</strong></td>
+                <td>{{ c.phone or "—" }}</td>
+                <td>{{ c.email or "—" }}</td>
+                <td class="text-center">{{ inv_counts.get(c.customer_id, 0) }}</td>
+                <td>
+                    <a href="{{ url_for('customer_detail', customer_id=c.customer_id) }}"
+                       class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i></a>
+                    <a href="{{ url_for('customer_edit', customer_id=c.customer_id) }}"
+                       class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i></a>
+                    <form method="POST" action="{{ url_for('customer_delete', customer_id=c.customer_id) }}"
+                          class="d-inline" onsubmit="return confirm('Delete this customer?');">
+                        <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">
+    No customers yet. Add profiles for bulk buyers, then attach them on <a href="{{ url_for('invoice_create') }}">New Sale</a>.
+</div>
+{% endif %}
+{% endblock %}

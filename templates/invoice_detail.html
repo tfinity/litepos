@@ -11,10 +11,18 @@
             </div>
             <div class="card-body">
                 <div class="row mb-3">
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                         <strong>Date:</strong> {{ invoice.created_at.strftime('%Y-%m-%d %H:%M') if invoice.created_at else '-' }}
                     </div>
-                    <div class="col-md-6">
+                    <div class="col-md-4">
+                        <strong>Customer:</strong>
+                        {% if invoice.customer %}
+                        <a href="{{ url_for('customer_detail', customer_id=invoice.customer.customer_id) }}">{{ invoice.customer.name }}</a>
+                        {% else %}
+                        <span class="text-muted">Walk-in</span>
+                        {% endif %}
+                    </div>
+                    <div class="col-md-4">
                         <strong>Payment:</strong> <span class="badge bg-secondary">{{ invoice.payment_method }}</span>
                     </div>
                 </div>

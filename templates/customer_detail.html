@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}{{ customer.name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-person-badge"></i> {{ customer.name }}</h2>
+        <p class="text-muted mb-0">Customer #{{ customer.customer_id }}</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('customer_edit', customer_id=customer.customer_id) }}" class="btn btn-outline-secondary">
+            <i class="bi bi-pencil"></i> Edit
+        </a>
+        <a href="{{ url_for('customers_list') }}" class="btn btn-secondary">Back</a>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">Invoices</h6>
+                <p class="fs-4 fw-bold mb-0">{{ invoices|length }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">Total billed ({{ currency }})</h6>
+                <p class="fs-4 fw-bold mb-0">{{ "{:,.2f}".format(revenue) }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">Units across all invoices</h6>
+                <p class="fs-4 fw-bold mb-0">{{ total_qty }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header"><strong>Contact</strong></div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <p class="mb-1"><strong>Phone:</strong> {{ customer.phone or "—" }}</p>
+                <p class="mb-1"><strong>Email:</strong> {{ customer.email or "—" }}</p>
+                <p class="mb-0"><strong>Tax / ID:</strong> {{ customer.tax_id or "—" }}</p>
+            </div>
+            <div class="col-md-6">
+                <p class="mb-1"><strong>Address:</strong></p>
+                <p class="text-muted">{{ customer.address or "—" }}</p>
+                {% if customer.notes %}
+                <p class="mb-0"><strong>Notes:</strong></p>
+                <p class="text-muted">{{ customer.notes }}</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Products purchased (all invoices)</strong>
+        <span class="small text-muted">Line totals: {{ currency }} {{ "{:,.2f}".format(total_lines_amount) }}</span>
+    </div>
+    <div class="card-body p-0">
+        {% if aggregates %}
+        <div class="table-responsive">
+            <table class="table table-sm mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Product</th>
+                        <th class="text-end">Total qty</th>
+                        <th class="text-end">Amount ({{ currency }})</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in aggregates %}
+                    <tr>
+                        <td>{{ row.product_name }}</td>
+                        <td class="text-end">{{ row.total_qty }}</td>
+                        <td class="text-end">{{ "{:,.2f}".format(row.total_amount) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted p-3 mb-0">No invoice lines yet for this customer.</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><strong>Invoices</strong></div>
+    <div class="card-body p-0">
+        {% if invoices %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Invoice</th>
+                        <th>Date</th>
+                        <th class="text-end">Total ({{ currency }})</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for inv in invoices %}
+                    <tr>
+                        <td><strong>INV-{{ "%04d"|format(inv.invoice_id) }}</strong></td>
+                        <td>{{ inv.created_at.strftime('%Y-%m-%d %H:%M') if inv.created_at else '—' }}</td>
+                        <td class="text-end">{{ "{:,.2f}".format(inv.total) }}</td>
+                        <td>
+                            <a href="{{ url_for('invoice_detail', invoice_id=inv.invoice_id) }}"
+                               class="btn btn-sm btn-outline-primary">View</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted p-3 mb-0">No invoices linked to this customer yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

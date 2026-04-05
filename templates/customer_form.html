@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if customer else "Add" }} customer{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h4 class="mb-0">{{ "Edit" if customer else "Add" }} customer</h4>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label">Name *</label>
+                            <input type="text" name="name" class="form-control" required
+                                   value="{{ (data.name if data else (customer.name if customer else ''))|e }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Phone</label>
+                            <input type="text" name="phone" class="form-control"
+                                   value="{{ (data.phone if data else (customer.phone if customer else ''))|e }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Email</label>
+                            <input type="email" name="email" class="form-control"
+                                   value="{{ (data.email if data else (customer.email if customer else ''))|e }}">
+                        </div>
+                        <div class="col-md-12">
+                            <label class="form-label">Address</label>
+                            <textarea name="address" class="form-control" rows="2">{{ (data.address if data else (customer.address if customer else ''))|e }}</textarea>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Tax / ID number</label>
+                            <input type="text" name="tax_id" class="form-control"
+                                   value="{{ (data.tax_id if data else (customer.tax_id if customer else ''))|e }}">
+                        </div>
+                        <div class="col-md-12">
+                            <label class="form-label">Notes</label>
+                            <textarea name="notes" class="form-control" rows="3">{{ (data.notes if data else (customer.notes if customer else ''))|e }}</textarea>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check-circle"></i> {{ "Update" if customer else "Add" }} customer
+                        </button>
+                        <a href="{{ url_for('customers_list') }}" class="btn btn-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -54,7 +54,11 @@
     <div class="receipt-info">
         <strong>Invoice:</strong> INV-{{ "%04d"|format(invoice.invoice_id) }}<br>
         <strong>Date:</strong> {{ invoice.created_at.strftime('%Y-%m-%d %H:%M') if invoice.created_at else '-' }}<br>
-        <strong>Payment:</strong> {{ invoice.payment_method }}
+        <strong>Payment:</strong> {{ invoice.payment_method }}<br>
+        {% if invoice.customer %}
+        <strong>Customer:</strong> {{ invoice.customer.name }}
+        {% if invoice.customer.phone %}<br><span style="font-size:11px">Tel: {{ invoice.customer.phone }}</span>{% endif %}
+        {% endif %}
     </div>
 
     <table class="receipt-table">

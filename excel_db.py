@@ -13,9 +13,13 @@ PRODUCT_HEADERS = [
     "product_id", "name", "purchase_price", "counter_price", "retail_price",
     "quantity", "barcode", "expiry_date", "category", "created_at",
 ]
+CUSTOMER_HEADERS = [
+    "customer_id", "name", "phone", "email", "address", "tax_id", "notes", "created_at",
+]
 INVOICE_HEADERS = [
     "invoice_id", "created_at", "subtotal", "discount_total",
     "tax_rate", "tax_amount", "total", "payment_method",
+    "customer_id",  # last: backward compatible with older workbooks (short rows)
 ]
 ITEM_HEADERS = [
     "item_id", "invoice_id", "product_id", "product_name",
@@ -25,18 +29,53 @@ ITEM_HEADERS = [
 
 
 def init_workbook():
-    """Create data.xlsx with header rows if it doesn't exist."""
-    if DATA_FILE.exists():
+    """Create data.xlsx with header rows if it doesn't exist; migrate existing files."""
+    if not DATA_FILE.exists():
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Products"
+        ws.append(PRODUCT_HEADERS)
+        ws2 = wb.create_sheet("Invoices")
+        ws2.append(INVOICE_HEADERS)
+        ws3 = wb.create_sheet("InvoiceItems")
+        ws3.append(ITEM_HEADERS)
+        ws4 = wb.create_sheet("Customers")
+        ws4.append(CUSTOMER_HEADERS)
+        wb.save(DATA_FILE)
+        wb.close()
+    ensure_workbook_schema()
+
+
+def ensure_workbook_schema():
+    """Add Customers sheet and Invoices.customer_id column to legacy workbooks."""
+    if not DATA_FILE.exists():
         return
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Products"
-    ws.append(PRODUCT_HEADERS)
-    ws2 = wb.create_sheet("Invoices")
-    ws2.append(INVOICE_HEADERS)
-    ws3 = wb.create_sheet("InvoiceItems")
-    ws3.append(ITEM_HEADERS)
-    wb.save(DATA_FILE)
+    with _lock:
+        wb = _open()
+        changed = False
+        if "Customers" not in wb.sheetnames:
+            ws = wb.create_sheet("Customers")
+            ws.append(CUSTOMER_HEADERS)
+            changed = True
+        ws_inv = wb["Invoices"]
+        last_h = ws_inv.cell(row=1, column=ws_inv.max_column).value
+        if last_h != "customer_id":
+            col = ws_inv.max_column + 1
+            ws_inv.cell(row=1, column=col).value = "customer_id"
+            changed = True
+        if changed:
+            wb.save(DATA_FILE)
+        wb.close()
+
+
+def normalize_customer_id(val):
+    """Return int customer id or None for blank / invalid."""
+    if val is None or val == "":
+        return None
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return None
 
 
 def _open():
@@ -186,6 +225,228 @@ def get_expiry_products(days_ahead=30):
     return results
 
 
+# ── Customers ─────────────────────────────────────────────────────────
+
+def get_all_customers():
+    with _lock:
+        wb = _open()
+        if "Customers" not in wb.sheetnames:
+            wb.close()
+            return []
+        ws = wb["Customers"]
+        customers = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            c = _row_to_dict(CUSTOMER_HEADERS, row)
+            c["customer_id"] = int(c["customer_id"])
+            customers.append(c)
+        wb.close()
+    customers.sort(key=lambda x: x["customer_id"])
+    return customers
+
+
+def get_customer(customer_id):
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        return None
+    for c in get_all_customers():
+        if c["customer_id"] == cid:
+            return c
+    return None
+
+
+def add_customer(data):
+    with _lock:
+        wb = _open()
+        if "Customers" not in wb.sheetnames:
+            ws_new = wb.create_sheet("Customers")
+            ws_new.append(CUSTOMER_HEADERS)
+        ws = wb["Customers"]
+        cid = _next_id(ws)
+        ws.append([
+            cid,
+            (data.get("name") or "").strip(),
+            (data.get("phone") or "").strip(),
+            (data.get("email") or "").strip(),
+            (data.get("address") or "").strip(),
+            (data.get("tax_id") or "").strip(),
+            (data.get("notes") or "").strip(),
+            datetime.now(),
+        ])
+        wb.save(DATA_FILE)
+        wb.close()
+    return cid
+
+
+def update_customer(customer_id, data):
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        return
+    with _lock:
+        wb = _open()
+        ws = wb["Customers"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is None:
+                continue
+            try:
+                if int(float(row[0].value)) != cid:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            row[1].value = (data.get("name") or "").strip()
+            row[2].value = (data.get("phone") or "").strip()
+            row[3].value = (data.get("email") or "").strip()
+            row[4].value = (data.get("address") or "").strip()
+            row[5].value = (data.get("tax_id") or "").strip()
+            row[6].value = (data.get("notes") or "").strip()
+            break
+        wb.save(DATA_FILE)
+        wb.close()
+
+
+def delete_customer(customer_id):
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        return False
+    with _lock:
+        wb = _open()
+        ws_inv = wb["Invoices"]
+        for row in ws_inv.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            inv = _row_to_dict(INVOICE_HEADERS, row)
+            if normalize_customer_id(inv.get("customer_id")) == cid:
+                wb.close()
+                raise ValueError("Cannot delete customer: invoices reference this profile.")
+        ws = wb["Customers"]
+        for idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+            if row[0].value is None:
+                continue
+            try:
+                if int(float(row[0].value)) != cid:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            ws.delete_rows(idx)
+            break
+        wb.save(DATA_FILE)
+        wb.close()
+    return True
+
+
+def search_customers(query):
+    q = str(query).lower().strip()
+    if not q:
+        return []
+    results = []
+    for c in get_all_customers():
+        if (q in str(c.get("name", "")).lower()
+                or q in str(c.get("phone", "")).lower()
+                or q in str(c.get("email", "")).lower()):
+            results.append(c)
+    return results[:20]
+
+
+def customer_lookup():
+    """Map customer_id -> customer dict."""
+    return {c["customer_id"]: c for c in get_all_customers()}
+
+
+def get_sales_summary_by_customer():
+    """Per-customer invoice count and total revenue (all time)."""
+    cmap = customer_lookup()
+    by_c = {cid: {"customer": c, "invoice_count": 0, "total_revenue": 0.0} for cid, c in cmap.items()}
+    walk_in = {"customer": None, "invoice_count": 0, "total_revenue": 0.0}
+    for inv in get_all_invoices():
+        total = float(inv["total"] or 0)
+        cid = normalize_customer_id(inv.get("customer_id"))
+        if cid is None or cid not in by_c:
+            walk_in["invoice_count"] += 1
+            walk_in["total_revenue"] += total
+        else:
+            bucket = by_c[cid]
+            bucket["invoice_count"] += 1
+            bucket["total_revenue"] += total
+    rows = [v for v in by_c.values() if v["invoice_count"]]
+    rows.sort(key=lambda x: x["total_revenue"], reverse=True)
+    walk_in["total_revenue"] = round(walk_in["total_revenue"], 2)
+    for r in rows:
+        r["total_revenue"] = round(r["total_revenue"], 2)
+    walk_in["invoice_count"] = walk_in["invoice_count"]  # no round
+    return rows, walk_in
+
+
+def get_invoices_for_customer(customer_id):
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        return []
+    return [
+        inv for inv in get_all_invoices()
+        if normalize_customer_id(inv.get("customer_id")) == cid
+    ]
+
+
+def get_customer_product_aggregates(customer_id):
+    """Total quantity and amount per product for all invoices of this customer."""
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        return []
+    inv_ids = {
+        int(inv["invoice_id"])
+        for inv in get_all_invoices()
+        if normalize_customer_id(inv.get("customer_id")) == cid
+    }
+    if not inv_ids:
+        return []
+    with _lock:
+        wb = _open()
+        ws = wb["InvoiceItems"]
+        by_pid = {}
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(ITEM_HEADERS, row)
+            iid = int(item["invoice_id"])
+            if iid not in inv_ids:
+                continue
+            pid = int(item["product_id"])
+            name = item.get("product_name") or ""
+            if pid not in by_pid:
+                by_pid[pid] = {
+                    "product_id": pid,
+                    "product_name": name,
+                    "total_qty": 0,
+                    "total_amount": 0.0,
+                }
+            by_pid[pid]["total_qty"] += int(item["quantity"] or 0)
+            by_pid[pid]["total_amount"] += float(item["line_total"] or 0)
+            if not by_pid[pid]["product_name"]:
+                by_pid[pid]["product_name"] = name
+        wb.close()
+    rows = list(by_pid.values())
+    rows.sort(key=lambda x: str(x["product_name"]).lower())
+    for r in rows:
+        r["total_amount"] = round(r["total_amount"], 2)
+    return rows
+
+
+def _customer_exists_in_workbook(wb, customer_id):
+    cid = int(customer_id)
+    if "Customers" not in wb.sheetnames:
+        return False
+    ws = wb["Customers"]
+    for row in ws.iter_rows(min_row=2, min_col=1, max_col=1, values_only=True):
+        if row[0] is None:
+            continue
+        try:
+            if int(float(row[0])) == cid:
+                return True
+        except (ValueError, TypeError):
+            continue
+    return False
+
+
 # ── Invoices ──────────────────────────────────────────────────────────
 
 def get_all_invoices():
@@ -224,11 +485,12 @@ def get_invoice_items(invoice_id):
     return items
 
 
-def create_invoice(items, tax_rate, payment_method):
+def create_invoice(items, tax_rate, payment_method, customer_id=None):
     """
     items: list of dicts with keys: product_id, quantity, discount_amount,
     optional unit_price (sale price per unit for this line; defaults to product counter_price).
     discount_amount is a direct amount per unit (not percentage).
+    customer_id: optional profile id (must exist on Customers sheet).
     Returns the new invoice_id, or raises ValueError on stock/discount issues.
     """
     with _lock:
@@ -236,6 +498,11 @@ def create_invoice(items, tax_rate, payment_method):
         ws_products = wb["Products"]
         ws_invoices = wb["Invoices"]
         ws_items = wb["InvoiceItems"]
+
+        cid = normalize_customer_id(customer_id)
+        if cid is not None and not _customer_exists_in_workbook(wb, cid):
+            wb.close()
+            raise ValueError("Customer not found.")
 
         invoice_id = _next_id(ws_invoices)
         item_id_start = _next_id(ws_items)
@@ -320,6 +587,7 @@ def create_invoice(items, tax_rate, payment_method):
             tax_amount,
             total,
             payment_method,
+            cid,
         ])
 
         for entry in line_entries:
