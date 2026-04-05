@@ -226,8 +226,9 @@ def get_invoice_items(invoice_id):
 
 def create_invoice(items, tax_rate, payment_method):
     """
-    items: list of dicts with keys: product_id, quantity, discount_amount
-    discount_amount is a direct PKR value per unit (not percentage).
+    items: list of dicts with keys: product_id, quantity, discount_amount,
+    optional unit_price (sale price per unit for this line; defaults to product counter_price).
+    discount_amount is a direct amount per unit (not percentage).
     Returns the new invoice_id, or raises ValueError on stock/discount issues.
     """
     with _lock:
@@ -264,21 +265,32 @@ def create_invoice(items, tax_rate, payment_method):
                 )
 
             purchase_price = float(prow[2].value)   # purchase_price
-            counter_price = float(prow[3].value)     # counter_price
+            catalog_counter = float(prow[3].value)  # product counter_price
 
-            # Guard: discounted price must not go below purchase price
-            discounted_price = counter_price - discount_per_unit
+            raw_unit = item.get("unit_price")
+            if raw_unit is None or raw_unit == "":
+                unit_price = catalog_counter
+            else:
+                unit_price = float(raw_unit)
+
+            if unit_price < 0:
+                raise ValueError(
+                    f"Invalid sale price for '{prow[1].value}': must be non-negative"
+                )
+
+            # Guard: price after per-unit discount must not go below purchase price
+            discounted_price = unit_price - discount_per_unit
             if discounted_price < purchase_price:
                 raise ValueError(
                     f"Discount too high for '{prow[1].value}': "
-                    f"discounted price {discounted_price:.2f} is below "
+                    f"price after discount {discounted_price:.2f} is below "
                     f"purchase price {purchase_price:.2f}. "
-                    f"Max discount: {counter_price - purchase_price:.2f}"
+                    f"Max discount: {unit_price - purchase_price:.2f}"
                 )
 
             line_discount = discount_per_unit * qty
             line_total = discounted_price * qty
-            subtotal += counter_price * qty  # pre-discount subtotal
+            subtotal += unit_price * qty  # pre-discount subtotal (uses line sale price)
             discount_total += line_discount
 
             line_entries.append([
@@ -287,7 +299,7 @@ def create_invoice(items, tax_rate, payment_method):
                 pid,
                 prow[1].value,       # product_name
                 purchase_price,
-                counter_price,
+                unit_price,          # effective unit price for this line (receipt / history)
                 qty,
                 line_discount,
                 round(line_total, 2),

@@ -19,11 +19,18 @@
                     <h6 id="selName"></h6>
                     <div class="mb-2">
                         <small class="d-block"><strong>Purchase:</strong> <span id="selPurchase" class="text-muted"></span> {{ currency }}</small>
-                        <small class="d-block"><strong>Counter:</strong> <span id="selCounter" class="text-primary fw-bold"></span> {{ currency }}</small>
+                        <small class="d-block"><strong>List (counter):</strong> <span id="selListCounter" class="text-primary fw-bold"></span> {{ currency }}</small>
                         <small class="d-block"><strong>MRP:</strong> <span id="selMRP"></span> {{ currency }}</small>
                         <small class="d-block"><strong>Stock:</strong> <span id="selStock"></span></small>
                     </div>
                     <input type="hidden" id="selId">
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Sale price ({{ currency }} / unit)</label>
+                            <input type="number" id="selSalePrice" class="form-control" min="0" step="0.01"
+                                   title="Override for this sale only; product list price is unchanged">
+                        </div>
+                    </div>
                     <div class="row g-2">
                         <div class="col-4">
                             <label class="form-label">Qty</label>
@@ -62,7 +69,7 @@
                         <thead>
                             <tr>
                                 <th>Product</th>
-                                <th>Counter</th>
+                                <th>Sale / unit</th>
                                 <th>Qty</th>
                                 <th>Disc ({{ currency }})</th>
                                 <th>Total</th>
@@ -129,19 +136,34 @@ const CURRENCY = "{{ currency }}";
 let cart = [];
 let searchTimeout = null;
 
-// Live discount validation
+// Live validation: sale price + discount vs purchase
+function getSelectedUnitPrice() {
+    const v = parseFloat(document.getElementById('selSalePrice').value);
+    if (Number.isFinite(v)) return v;
+    return parseFloat(document.getElementById('selListCounter').textContent) || 0;
+}
+
 document.getElementById('selDiscount').addEventListener('input', function() {
+    validateDiscount();
+});
+document.getElementById('selSalePrice').addEventListener('input', function() {
     validateDiscount();
 });
 
 function validateDiscount() {
-    const counterPrice = parseFloat(document.getElementById('selCounter').textContent);
+    const unitPrice = getSelectedUnitPrice();
     const purchasePrice = parseFloat(document.getElementById('selPurchase').textContent);
     const discAmt = parseFloat(document.getElementById('selDiscount').value) || 0;
-    const discounted = counterPrice - discAmt;
+    const discounted = unitPrice - discAmt;
     const warning = document.getElementById('discountWarning');
-    const maxDisc = (counterPrice - purchasePrice).toFixed(2);
+    const maxDisc = Math.max(0, unitPrice - purchasePrice);
+    const maxDiscStr = maxDisc.toFixed(2);
 
+    if (unitPrice < 0 || !Number.isFinite(unitPrice)) {
+        document.getElementById('discountWarningText').textContent = 'Enter a valid sale price.';
+        warning.style.display = 'block';
+        return false;
+    }
     if (discAmt < 0) {
         document.getElementById('discountWarningText').textContent = 'Discount cannot be negative.';
         warning.style.display = 'block';
@@ -149,7 +171,7 @@ function validateDiscount() {
     }
     if (discounted < purchasePrice) {
         document.getElementById('discountWarningText').textContent =
-            `Price after discount (${discounted.toFixed(2)}) is below purchase price (${purchasePrice.toFixed(2)}). Max discount: ${CURRENCY} ${maxDisc}`;
+            `Price after discount (${discounted.toFixed(2)}) is below purchase price (${purchasePrice.toFixed(2)}). Max discount: ${CURRENCY} ${maxDiscStr}`;
         warning.style.display = 'block';
         return false;
     }
@@ -197,26 +219,29 @@ function selectProduct(product) {
     document.getElementById('selectedProduct').style.display = 'block';
     document.getElementById('selName').textContent = product.name;
     document.getElementById('selPurchase').textContent = parseFloat(product.purchase_price).toFixed(2);
-    document.getElementById('selCounter').textContent = parseFloat(product.counter_price).toFixed(2);
+    const listCounter = parseFloat(product.counter_price);
+    document.getElementById('selListCounter').textContent = listCounter.toFixed(2);
     document.getElementById('selMRP').textContent = parseFloat(product.retail_price).toFixed(2);
     document.getElementById('selStock').textContent = product.quantity;
     document.getElementById('selId').value = product.product_id;
     document.getElementById('selQty').value = 1;
     document.getElementById('selQty').max = product.quantity;
     document.getElementById('selDiscount').value = 0;
+    document.getElementById('selSalePrice').value = listCounter.toFixed(2);
     document.getElementById('discountWarning').style.display = 'none';
-    document.getElementById('selQty').focus();
+    document.getElementById('selSalePrice').focus();
 }
 
 function addToCart() {
     if (!validateDiscount()) {
-        alert('Cannot add: discount makes the price go below purchase price!');
+        alert('Cannot add: fix sale price or discount (price after discount must be at or above purchase).');
         return;
     }
 
     const id = parseInt(document.getElementById('selId').value);
     const name = document.getElementById('selName').textContent;
-    const counterPrice = parseFloat(document.getElementById('selCounter').textContent);
+    const listCounter = parseFloat(document.getElementById('selListCounter').textContent);
+    const unitPrice = getSelectedUnitPrice();
     const purchasePrice = parseFloat(document.getElementById('selPurchase').textContent);
     const qty = parseInt(document.getElementById('selQty').value);
     const discAmt = parseFloat(document.getElementById('selDiscount').value) || 0;
@@ -227,10 +252,14 @@ function addToCart() {
         return;
     }
 
-    const discountedPrice = counterPrice - discAmt;
+    const discountedPrice = unitPrice - discAmt;
 
-    // Check if already in cart with same discount
-    const existing = cart.find(item => item.product_id === id && item.discount_per_unit === discAmt);
+    // Merge if same product, same per-unit sale price, and same discount
+    const existing = cart.find(item =>
+        item.product_id === id &&
+        item.discount_per_unit === discAmt &&
+        Math.abs(item.unit_price - unitPrice) < 1e-9
+    );
     if (existing) {
         const newQty = existing.quantity + qty;
         if (newQty > maxStock) {
@@ -244,7 +273,8 @@ function addToCart() {
         cart.push({
             product_id: id,
             product_name: name,
-            counter_price: counterPrice,
+            list_counter: listCounter,
+            unit_price: unitPrice,
             purchase_price: purchasePrice,
             quantity: qty,
             discount_per_unit: discAmt,
@@ -276,7 +306,7 @@ function updateQty(index, newQty) {
     }
     item.quantity = newQty;
     item.discount_total = item.discount_per_unit * newQty;
-    item.line_total = (item.counter_price - item.discount_per_unit) * newQty;
+    item.line_total = (item.unit_price - item.discount_per_unit) * newQty;
     renderCart();
 }
 
@@ -285,9 +315,9 @@ function updateDiscount(index, newDisc) {
     newDisc = parseFloat(newDisc) || 0;
     if (newDisc < 0) newDisc = 0;
 
-    const discountedPrice = item.counter_price - newDisc;
+    const discountedPrice = item.unit_price - newDisc;
     if (discountedPrice < item.purchase_price) {
-        const maxDisc = (item.counter_price - item.purchase_price).toFixed(2);
+        const maxDisc = Math.max(0, item.unit_price - item.purchase_price).toFixed(2);
         alert(`Discount too high! Price after discount (${discountedPrice.toFixed(2)}) goes below purchase price (${item.purchase_price.toFixed(2)}).\nMax discount: ${CURRENCY} ${maxDisc}`);
         return;
     }
@@ -298,6 +328,28 @@ function updateDiscount(index, newDisc) {
     renderCart();
 }
 
+function updateUnitPrice(index, newPrice) {
+    const item = cart[index];
+    newPrice = parseFloat(newPrice);
+    if (!Number.isFinite(newPrice) || newPrice < 0) {
+        alert('Enter a valid sale price.');
+        renderCart();
+        return;
+    }
+    const disc = item.discount_per_unit;
+    const after = newPrice - disc;
+    if (after < item.purchase_price) {
+        const maxDisc = Math.max(0, newPrice - item.purchase_price).toFixed(2);
+        alert(`Sale price too low with this discount. Price after discount (${after.toFixed(2)}) is below purchase (${item.purchase_price.toFixed(2)}). Reduce discount (max ${CURRENCY} ${maxDisc}) or raise sale price.`);
+        renderCart();
+        return;
+    }
+    item.unit_price = newPrice;
+    item.line_total = after * item.quantity;
+    item.discount_total = disc * item.quantity;
+    renderCart();
+}
+
 function renderCart() {
     const tbody = document.getElementById('cartBody');
 
@@ -305,10 +357,18 @@ function renderCart() {
         tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Cart is empty.</td></tr>`;
         document.getElementById('submitBtn').disabled = true;
     } else {
-        tbody.innerHTML = cart.map((item, i) =>
-            `<tr>
-                <td>${item.product_name}</td>
-                <td>${CURRENCY} ${item.counter_price.toFixed(2)}</td>
+        tbody.innerHTML = cart.map((item, i) => {
+            const listHint = Math.abs(item.unit_price - item.list_counter) > 1e-6
+                ? `<div class="small text-muted">List: ${CURRENCY} ${item.list_counter.toFixed(2)}</div>`
+                : '';
+            return `<tr>
+                <td>${item.product_name}${listHint}</td>
+                <td>
+                    <input type="number" class="form-control form-control-sm" style="width:95px"
+                           value="${item.unit_price.toFixed(2)}" min="0" step="0.01"
+                           title="Sale price for this line only"
+                           onchange="updateUnitPrice(${i}, this.value)">
+                </td>
                 <td>
                     <input type="number" class="form-control form-control-sm" style="width:70px"
                            value="${item.quantity}" min="1" max="${item.max_stock}"
@@ -321,12 +381,12 @@ function renderCart() {
                 </td>
                 <td>${CURRENCY} ${item.line_total.toFixed(2)}</td>
                 <td><button class="btn btn-sm btn-outline-danger" onclick="removeFromCart(${i})"><i class="bi bi-x"></i></button></td>
-            </tr>`
-        ).join('');
+            </tr>`;
+        }).join('');
         document.getElementById('submitBtn').disabled = false;
     }
 
-    const subtotal = cart.reduce((sum, item) => sum + (item.counter_price * item.quantity), 0);
+    const subtotal = cart.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
     const discountTotal = cart.reduce((sum, item) => sum + item.discount_total, 0);
     const net = subtotal - discountTotal;
     const tax = net * TAX_RATE;
@@ -347,6 +407,7 @@ function submitInvoice() {
             product_id: item.product_id,
             quantity: item.quantity,
             discount_amount: item.discount_per_unit,
+            unit_price: item.unit_price,
         })),
         payment_method: document.getElementById('paymentMethod').value,
     };
