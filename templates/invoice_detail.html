@@ -23,7 +23,12 @@
                         {% endif %}
                     </div>
                     <div class="col-md-4">
-                        <strong>Payment:</strong> <span class="badge bg-secondary">{{ invoice.payment_method }}</span>
+                        <strong>Payment:</strong>
+                        {% if invoice.payment_method == 'Credit' %}
+                        <span class="badge bg-danger">UNPAID / Credit</span>
+                        {% else %}
+                        <span class="badge bg-secondary">{{ invoice.payment_method }}</span>
+                        {% endif %}
                     </div>
                 </div>
 

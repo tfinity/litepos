@@ -47,12 +47,17 @@ def dashboard():
     low_stock = excel_db.get_low_stock_products(LOW_STOCK_THRESHOLD)
     expiring = excel_db.get_expiry_products(EXPIRY_WARNING_DAYS)
     sales_count, sales_total = excel_db.get_today_sales()
+    balances = excel_db.get_all_credit_balances()
+    credit_outstanding = round(sum(b["balance"] for b in balances if b["balance"] > 0), 2)
+    credit_customers = sum(1 for b in balances if b["balance"] > 0)
     return render_template("dashboard.html",
                            total_products=len(products),
                            low_stock_count=len(low_stock),
                            expiring_count=len(expiring),
                            sales_count=sales_count,
-                           sales_total=sales_total)
+                           sales_total=sales_total,
+                           credit_outstanding=credit_outstanding,
+                           credit_customers=credit_customers)
 
 
 # ── Products ─────────────────────────────────────────────────────────
@@ -302,6 +307,8 @@ def customer_detail(customer_id):
     total_qty = sum(a["total_qty"] for a in aggregates)
     total_lines_amount = sum(a["total_amount"] for a in aggregates)
     revenue = sum(float(i["total"] or 0) for i in invoices)
+    credit_debt, credit_paid, credit_balance = excel_db.get_customer_balance(customer_id)
+    ledger_entries = excel_db.get_credit_ledger(customer_id=customer_id)
     return render_template(
         "customer_detail.html",
         customer=customer,
@@ -310,6 +317,10 @@ def customer_detail(customer_id):
         total_qty=total_qty,
         total_lines_amount=round(total_lines_amount, 2),
         revenue=round(revenue, 2),
+        credit_debt=credit_debt,
+        credit_paid=credit_paid,
+        credit_balance=credit_balance,
+        ledger_entries=ledger_entries,
     )
 
 
@@ -372,6 +383,32 @@ def api_customers_create():
     })
     c = excel_db.get_customer(cid)
     return jsonify({"customer": _customer_to_json(c)})
+
+
+@app.route("/credit-ledger")
+def credit_ledger():
+    balances = excel_db.get_all_credit_balances()
+    total_outstanding = round(sum(b["balance"] for b in balances if b["balance"] > 0), 2)
+    return render_template("credit_ledger.html",
+                           balances=balances,
+                           total_outstanding=total_outstanding)
+
+
+@app.route("/credit-ledger/<int:customer_id>/pay", methods=["POST"])
+def record_credit_payment(customer_id):
+    amount_str = request.form.get("amount", "").strip()
+    note = request.form.get("note", "").strip()
+    try:
+        amount = float(amount_str)
+    except (ValueError, TypeError):
+        flash("Invalid amount.", "danger")
+        return redirect(url_for("credit_ledger"))
+    try:
+        excel_db.add_ledger_payment(customer_id, amount, note)
+        flash(f"Payment of {CURRENCY} {amount:.2f} recorded.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(request.referrer or url_for("credit_ledger"))
 
 
 @app.route("/products/import", methods=["GET", "POST"])

@@ -116,11 +116,15 @@
                 <div class="row">
                     <div class="col-md-5">
                         <label class="form-label">Payment Method</label>
-                        <select id="paymentMethod" class="form-select">
+                        <select id="paymentMethod" class="form-select" onchange="onPaymentMethodChange()">
                             <option value="Cash">Cash</option>
                             <option value="Card">Card</option>
                             <option value="Mobile">Mobile Money</option>
+                            <option value="Credit">Credit (Unpaid)</option>
                         </select>
+                        <div id="creditWarning" class="text-warning small mt-1" style="display:none">
+                            <i class="bi bi-exclamation-triangle"></i> Credit payment requires a customer — please select one above.
+                        </div>
                     </div>
                     <div class="col-md-7 text-end">
                         <table class="table table-borderless mb-0">
@@ -210,6 +214,7 @@ function clearCustomer() {
 
 function selectCustomer(c) {
     document.getElementById('customerId').value = c.customer_id;
+    document.getElementById('creditWarning').style.display = 'none';
     document.getElementById('customerLabel').textContent = c.name;
     const bits = [];
     if (c.phone) bits.push(c.phone);
@@ -555,8 +560,28 @@ function renderCart() {
     document.getElementById('cartCount').textContent = cart.length + ' item' + (cart.length !== 1 ? 's' : '');
 }
 
+function onPaymentMethodChange() {
+    const pm = document.getElementById('paymentMethod').value;
+    const cid = document.getElementById('customerId').value.trim();
+    const warn = document.getElementById('creditWarning');
+    if (pm === 'Credit' && !cid) {
+        warn.style.display = 'block';
+    } else {
+        warn.style.display = 'none';
+    }
+}
+
 function submitInvoice() {
     if (cart.length === 0) return;
+
+    const pm = document.getElementById('paymentMethod').value;
+    if (pm === 'Credit') {
+        const cid = document.getElementById('customerId').value.trim();
+        if (!cid) {
+            alert('Credit payment requires a customer to be selected.');
+            return;
+        }
+    }
 
     const payload = {
         items: cart.map(item => ({

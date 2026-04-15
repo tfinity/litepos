@@ -42,7 +42,13 @@
                 </td>
                 {% if inv.tax_rate %}<td>{{ "{:,.2f}".format(inv.tax_amount) }}</td>{% endif %}
                 <td class="fw-bold">{{ "{:,.2f}".format(inv.total) }}</td>
-                <td><span class="badge bg-secondary">{{ inv.payment_method }}</span></td>
+                <td>
+                    {% if inv.payment_method == 'Credit' %}
+                    <span class="badge bg-danger">UNPAID</span>
+                    {% else %}
+                    <span class="badge bg-secondary">{{ inv.payment_method }}</span>
+                    {% endif %}
+                </td>
                 <td>
                     <a href="{{ url_for('invoice_detail', invoice_id=inv.invoice_id) }}"
                        class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i> View</a>

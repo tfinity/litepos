@@ -26,6 +26,9 @@ ITEM_HEADERS = [
     "purchase_price", "counter_price", "quantity",
     "discount_amount", "line_total",
 ]
+CREDIT_LEDGER_HEADERS = [
+    "entry_id", "customer_id", "invoice_id", "type", "amount", "note", "created_at",
+]
 
 
 def init_workbook():
@@ -41,6 +44,8 @@ def init_workbook():
         ws3.append(ITEM_HEADERS)
         ws4 = wb.create_sheet("Customers")
         ws4.append(CUSTOMER_HEADERS)
+        ws5 = wb.create_sheet("CreditLedger")
+        ws5.append(CREDIT_LEDGER_HEADERS)
         wb.save(DATA_FILE)
         wb.close()
     ensure_workbook_schema()
@@ -62,6 +67,10 @@ def ensure_workbook_schema():
         if last_h != "customer_id":
             col = ws_inv.max_column + 1
             ws_inv.cell(row=1, column=col).value = "customer_id"
+            changed = True
+        if "CreditLedger" not in wb.sheetnames:
+            ws_cl = wb.create_sheet("CreditLedger")
+            ws_cl.append(CREDIT_LEDGER_HEADERS)
             changed = True
         if changed:
             wb.save(DATA_FILE)
@@ -500,6 +509,9 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
         ws_items = wb["InvoiceItems"]
 
         cid = normalize_customer_id(customer_id)
+        if payment_method == "Credit" and cid is None:
+            wb.close()
+            raise ValueError("Credit payment requires a customer to be selected.")
         if cid is not None and not _customer_exists_in_workbook(wb, cid):
             wb.close()
             raise ValueError("Customer not found.")
@@ -593,10 +605,102 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
         for entry in line_entries:
             ws_items.append(entry)
 
+        # Credit sale: record debit in ledger
+        if payment_method == "Credit" and cid is not None:
+            if "CreditLedger" not in wb.sheetnames:
+                ws_cl = wb.create_sheet("CreditLedger")
+                ws_cl.append(CREDIT_LEDGER_HEADERS)
+            ws_cl = wb["CreditLedger"]
+            cl_entry_id = _next_id(ws_cl)
+            ws_cl.append([cl_entry_id, cid, invoice_id, "debit", total, "Credit sale", datetime.now()])
+
         wb.save(DATA_FILE)
         wb.close()
 
     return invoice_id
+
+
+def get_credit_ledger(customer_id=None):
+    """Return all CreditLedger entries, optionally filtered by customer_id."""
+    cid = normalize_customer_id(customer_id) if customer_id is not None else None
+    with _lock:
+        wb = _open()
+        if "CreditLedger" not in wb.sheetnames:
+            wb.close()
+            return []
+        ws = wb["CreditLedger"]
+        entries = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            e = _row_to_dict(CREDIT_LEDGER_HEADERS, row)
+            if cid is not None and normalize_customer_id(e.get("customer_id")) != cid:
+                continue
+            entries.append(e)
+        wb.close()
+    entries.sort(key=lambda x: x["entry_id"], reverse=True)
+    return entries
+
+
+def add_ledger_payment(customer_id, amount, note=""):
+    """Record a cash payment from a customer (credit entry, reduces their balance)."""
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        raise ValueError("Invalid customer.")
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    if not get_customer(cid):
+        raise ValueError("Customer not found.")
+    with _lock:
+        wb = _open()
+        if "CreditLedger" not in wb.sheetnames:
+            ws_cl = wb.create_sheet("CreditLedger")
+            ws_cl.append(CREDIT_LEDGER_HEADERS)
+        ws_cl = wb["CreditLedger"]
+        entry_id = _next_id(ws_cl)
+        ws_cl.append([entry_id, cid, None, "credit", amount, (note or "").strip(), datetime.now()])
+        wb.save(DATA_FILE)
+        wb.close()
+    return entry_id
+
+
+def get_customer_balance(customer_id):
+    """Return (total_debt, total_paid, balance). Positive balance = customer owes us."""
+    entries = get_credit_ledger(customer_id=customer_id)
+    total_debt = sum(float(e["amount"] or 0) for e in entries if e["type"] == "debit")
+    total_paid = sum(float(e["amount"] or 0) for e in entries if e["type"] == "credit")
+    balance = round(total_debt - total_paid, 2)
+    return round(total_debt, 2), round(total_paid, 2), balance
+
+
+def get_all_credit_balances():
+    """Return list of {customer, customer_id, total_debt, total_paid, balance} for all customers with any ledger entry."""
+    cmap = customer_lookup()
+    entries = get_credit_ledger()
+    by_cid = {}
+    for e in entries:
+        cid = normalize_customer_id(e.get("customer_id"))
+        if cid is None:
+            continue
+        if cid not in by_cid:
+            by_cid[cid] = {"total_debt": 0.0, "total_paid": 0.0}
+        if e["type"] == "debit":
+            by_cid[cid]["total_debt"] += float(e["amount"] or 0)
+        else:
+            by_cid[cid]["total_paid"] += float(e["amount"] or 0)
+    result = []
+    for cid, b in by_cid.items():
+        balance = round(b["total_debt"] - b["total_paid"], 2)
+        result.append({
+            "customer": cmap.get(cid),
+            "customer_id": cid,
+            "total_debt": round(b["total_debt"], 2),
+            "total_paid": round(b["total_paid"], 2),
+            "balance": balance,
+        })
+    result.sort(key=lambda x: x["balance"], reverse=True)
+    return result
 
 
 def get_today_sales():

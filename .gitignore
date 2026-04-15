@@ -14,3 +14,16 @@ __pycache__/
 
 # OS
 .DS_Store
+# Added by code-review-graph
+.code-review-graph/
+
+.cursor
+.claude
+.kiro
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.windsurfrules
+.mcp.json
+.opencode.json
+.cursorrules

@@ -15,7 +15,7 @@
 </div>
 
 <div class="row g-3 mb-4">
-    <div class="col-md-4">
+    <div class="col-md-3">
         <div class="card h-100">
             <div class="card-body">
                 <h6 class="text-muted">Invoices</h6>
@@ -23,7 +23,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3">
         <div class="card h-100">
             <div class="card-body">
                 <h6 class="text-muted">Total billed ({{ currency }})</h6>
@@ -31,12 +31,32 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    <div class="col-md-3">
         <div class="card h-100">
             <div class="card-body">
                 <h6 class="text-muted">Units across all invoices</h6>
                 <p class="fs-4 fw-bold mb-0">{{ total_qty }}</p>
             </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100 {{ 'border-danger' if credit_balance > 0 else '' }}">
+            <div class="card-body">
+                <h6 class="text-muted">Outstanding balance ({{ currency }})</h6>
+                <p class="fs-4 fw-bold mb-0 {{ 'text-danger' if credit_balance > 0 else 'text-success' }}">
+                    {{ "{:,.2f}".format(credit_balance) }}
+                </p>
+                {% if credit_balance > 0 %}
+                <small class="text-muted">Debt: {{ "{:,.2f}".format(credit_debt) }} · Paid: {{ "{:,.2f}".format(credit_paid) }}</small>
+                {% endif %}
+            </div>
+            {% if credit_balance > 0 %}
+            <div class="card-footer p-2">
+                <button class="btn btn-sm btn-success w-100" data-bs-toggle="modal" data-bs-target="#payModal">
+                    <i class="bi bi-cash"></i> Record Payment
+                </button>
+            </div>
+            {% endif %}
         </div>
     </div>
 </div>
@@ -95,7 +115,7 @@
     </div>
 </div>
 
-<div class="card">
+<div class="card mb-4">
     <div class="card-header"><strong>Invoices</strong></div>
     <div class="card-body p-0">
         {% if invoices %}
@@ -106,6 +126,7 @@
                         <th>Invoice</th>
                         <th>Date</th>
                         <th class="text-end">Total ({{ currency }})</th>
+                        <th>Payment</th>
                         <th></th>
                     </tr>
                 </thead>
@@ -115,6 +136,13 @@
                         <td><strong>INV-{{ "%04d"|format(inv.invoice_id) }}</strong></td>
                         <td>{{ inv.created_at.strftime('%Y-%m-%d %H:%M') if inv.created_at else '—' }}</td>
                         <td class="text-end">{{ "{:,.2f}".format(inv.total) }}</td>
+                        <td>
+                            {% if inv.payment_method == 'Credit' %}
+                            <span class="badge bg-danger">UNPAID</span>
+                            {% else %}
+                            <span class="badge bg-secondary">{{ inv.payment_method }}</span>
+                            {% endif %}
+                        </td>
                         <td>
                             <a href="{{ url_for('invoice_detail', invoice_id=inv.invoice_id) }}"
                                class="btn btn-sm btn-outline-primary">View</a>
@@ -129,4 +157,87 @@
         {% endif %}
     </div>
 </div>
+
+{% if ledger_entries %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Credit Ledger</strong>
+        {% if credit_balance > 0 %}
+        <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#payModal">
+            <i class="bi bi-cash"></i> Record Payment
+        </button>
+        {% endif %}
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>Invoice</th>
+                        <th class="text-end">Amount ({{ currency }})</th>
+                        <th>Note</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for e in ledger_entries %}
+                    <tr>
+                        <td>{{ e.created_at.strftime('%Y-%m-%d %H:%M') if e.created_at else '—' }}</td>
+                        <td>
+                            {% if e.type == 'debit' %}
+                            <span class="badge bg-danger">Debt</span>
+                            {% else %}
+                            <span class="badge bg-success">Payment</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if e.invoice_id %}
+                            <a href="{{ url_for('invoice_detail', invoice_id=e.invoice_id) }}">INV-{{ "%04d"|format(e.invoice_id) }}</a>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td class="text-end {{ 'text-danger' if e.type == 'debit' else 'text-success' }}">
+                            {{ "{:,.2f}".format(e.amount) }}
+                        </td>
+                        <td class="text-muted">{{ e.note or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Payment Modal -->
+{% if credit_balance > 0 %}
+<div class="modal fade" id="payModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('record_credit_payment', customer_id=customer.customer_id) }}">
+                <div class="modal-header">
+                    <h5 class="modal-title">Record Payment — {{ customer.name }}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-2">Outstanding balance: <strong class="text-danger">{{ currency }} {{ "{:,.2f}".format(credit_balance) }}</strong></p>
+                    <div class="mb-3">
+                        <label class="form-label">Amount ({{ currency }})</label>
+                        <input type="number" name="amount" class="form-control" min="0.01" step="0.01"
+                               value="{{ credit_balance }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Note (optional)</label>
+                        <input type="text" name="note" class="form-control" placeholder="e.g. Cash payment">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success">Save Payment</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
