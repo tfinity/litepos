@@ -126,6 +126,7 @@
     </div>
 
     <button class="btn-print no-print" onclick="window.print()">Print Receipt</button>
+    <a href="{{ url_for('invoice_edit', invoice_id=invoice.invoice_id) }}" class="btn-back no-print" style="background:#ffc107;color:#000">Edit Invoice</a>
     <a href="{{ url_for('invoices') }}" class="btn-back no-print">Back to Invoices</a>
     <a href="{{ url_for('invoice_create') }}" class="btn-back no-print" style="background:#0d6efd">New Sale</a>
 </body>

@@ -620,6 +620,149 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
     return invoice_id
 
 
+def update_invoice(invoice_id, items, tax_rate):
+    """
+    Edit an existing invoice in-place.
+    Returns old stock for every original item, then deducts stock for new items.
+    Updates InvoiceItems, the Invoice row totals, and the CreditLedger debit if Credit.
+    Raises ValueError on validation errors.
+    """
+    with _lock:
+        wb = _open()
+        ws_products = wb["Products"]
+        ws_invoices = wb["Invoices"]
+        ws_items = wb["InvoiceItems"]
+
+        # Locate invoice row
+        inv_row_ref = None
+        inv_row_idx = None
+        for idx, row in enumerate(ws_invoices.iter_rows(min_row=2), start=2):
+            if row[0].value is not None and int(row[0].value) == int(invoice_id):
+                inv_row_ref = row
+                inv_row_idx = idx
+                break
+        if inv_row_ref is None:
+            wb.close()
+            raise ValueError("Invoice not found.")
+
+        invoice = _row_to_dict(INVOICE_HEADERS, [c.value for c in inv_row_ref])
+
+        # Collect old item rows (indices in reverse so deletion is safe)
+        old_items = []
+        old_item_indices = []
+        for idx, row in enumerate(ws_items.iter_rows(min_row=2), start=2):
+            if row[0].value is not None and int(row[1].value) == int(invoice_id):
+                old_items.append(_row_to_dict(ITEM_HEADERS, [c.value for c in row]))
+                old_item_indices.append(idx)
+
+        # Build product row lookup
+        product_rows = {}
+        for row in ws_products.iter_rows(min_row=2):
+            if row[0].value is not None:
+                product_rows[int(row[0].value)] = row
+
+        # Return stock from old items
+        for old in old_items:
+            pid = int(old["product_id"])
+            if pid in product_rows:
+                product_rows[pid][5].value = int(product_rows[pid][5].value) + int(old["quantity"])
+
+        # Validate + compute new items
+        subtotal = 0.0
+        discount_total = 0.0
+        new_entries = []
+        item_id_start = _next_id(ws_items)
+
+        for i, item in enumerate(items):
+            pid = int(item["product_id"])
+            qty = int(item["quantity"])
+            discount_per_unit = float(item.get("discount_amount", 0))
+
+            if pid not in product_rows:
+                wb.close()
+                raise ValueError(f"Product ID {pid} not found")
+            prow = product_rows[pid]
+            available = int(prow[5].value)
+            if qty > available:
+                wb.close()
+                raise ValueError(
+                    f"Not enough stock for '{prow[1].value}': "
+                    f"requested {qty}, available {available}"
+                )
+
+            purchase_price = float(prow[2].value)
+            catalog_counter = float(prow[3].value)
+            raw_unit = item.get("unit_price")
+            unit_price = float(raw_unit) if raw_unit not in (None, "") else catalog_counter
+
+            if unit_price < 0:
+                wb.close()
+                raise ValueError(f"Invalid sale price for '{prow[1].value}'")
+
+            discounted_price = unit_price - discount_per_unit
+            if discounted_price < purchase_price:
+                wb.close()
+                raise ValueError(
+                    f"Discount too high for '{prow[1].value}': "
+                    f"price after discount {discounted_price:.2f} below purchase {purchase_price:.2f}"
+                )
+
+            line_discount = discount_per_unit * qty
+            line_total = discounted_price * qty
+            subtotal += unit_price * qty
+            discount_total += line_discount
+
+            new_entries.append([
+                item_id_start + i,
+                invoice_id,
+                pid,
+                prow[1].value,
+                purchase_price,
+                unit_price,
+                qty,
+                line_discount,
+                round(line_total, 2),
+            ])
+            prow[5].value = available - qty
+
+        net = round(subtotal - discount_total, 2)
+        tax_amount = round(net * tax_rate, 2)
+        total = round(net + tax_amount, 2)
+
+        # Delete old item rows (reverse order)
+        for idx in sorted(old_item_indices, reverse=True):
+            ws_items.delete_rows(idx)
+
+        for entry in new_entries:
+            ws_items.append(entry)
+
+        # Update invoice row totals
+        inv_row_ref[2].value = round(subtotal, 2)
+        inv_row_ref[3].value = round(discount_total, 2)
+        inv_row_ref[4].value = tax_rate
+        inv_row_ref[5].value = tax_amount
+        inv_row_ref[6].value = total
+
+        # Update credit ledger debit if Credit invoice
+        payment_method = invoice.get("payment_method")
+        cid = normalize_customer_id(invoice.get("customer_id"))
+        if payment_method == "Credit" and cid is not None and "CreditLedger" in wb.sheetnames:
+            ws_cl = wb["CreditLedger"]
+            for row in ws_cl.iter_rows(min_row=2):
+                if (row[0].value is not None
+                        and normalize_customer_id(row[1].value) == cid
+                        and row[2].value is not None
+                        and int(row[2].value) == int(invoice_id)
+                        and row[3].value == "debit"):
+                    row[4].value = total
+                    break
+
+        wb.save(DATA_FILE)
+        wb.close()
+
+    return invoice_id
+
+
 def get_credit_ledger(customer_id=None):
     """Return all CreditLedger entries, optionally filtered by customer_id."""
     cid = normalize_customer_id(customer_id) if customer_id is not None else None

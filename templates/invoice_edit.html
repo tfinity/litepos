@@ -1,0 +1,436 @@
+{% extends "base.html" %}
+{% block title %}Edit Invoice INV-{{ "%04d"|format(invoice.invoice_id) }}{% endblock %}
+{% block content %}
+<h2 class="mb-4">
+    <i class="bi bi-pencil-square"></i>
+    Edit Invoice <span class="text-muted">INV-{{ "%04d"|format(invoice.invoice_id) }}</span>
+</h2>
+
+<!-- Locked invoice info -->
+<div class="alert alert-warning d-flex align-items-center gap-2 mb-3">
+    <i class="bi bi-lock-fill"></i>
+    <span>
+        <strong>Payment:</strong> {{ invoice.payment_method }} &nbsp;|&nbsp;
+        <strong>Customer:</strong>
+        {% if invoice.customer %}{{ invoice.customer.name }}{% else %}Walk-in{% endif %}
+        &nbsp;|&nbsp; These cannot be changed here.
+    </span>
+</div>
+
+<div class="row">
+    <!-- Product Search -->
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">Add / Replace Products</h5></div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">Search Product (name or barcode)</label>
+                    <input type="text" id="searchInput" class="form-control"
+                           placeholder="Type to search..." autocomplete="off">
+                    <div id="searchResults" class="list-group mt-1"></div>
+                </div>
+                <div id="selectedProduct" style="display:none" class="border rounded p-3 mb-3 bg-light">
+                    <h6 id="selName"></h6>
+                    <div class="mb-2">
+                        <small class="d-block"><strong>Purchase:</strong> <span id="selPurchase" class="text-muted"></span> {{ currency }}</small>
+                        <small class="d-block"><strong>List (counter):</strong> <span id="selListCounter" class="text-primary fw-bold"></span> {{ currency }}</small>
+                        <small class="d-block"><strong>MRP:</strong> <span id="selMRP"></span> {{ currency }}</small>
+                        <small class="d-block"><strong>Stock:</strong> <span id="selStock"></span></small>
+                    </div>
+                    <input type="hidden" id="selId">
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Sale price ({{ currency }} / unit)</label>
+                            <input type="number" id="selSalePrice" class="form-control" min="0" step="0.01">
+                        </div>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-4">
+                            <label class="form-label">Qty</label>
+                            <input type="number" id="selQty" class="form-control" min="1" value="1">
+                        </div>
+                        <div class="col-5">
+                            <label class="form-label">Discount ({{ currency }})</label>
+                            <input type="number" id="selDiscount" class="form-control" min="0" step="0.01" value="0">
+                        </div>
+                        <div class="col-3 d-flex align-items-end">
+                            <button class="btn btn-primary w-100" onclick="addToCart()">
+                                <i class="bi bi-plus"></i> Add
+                            </button>
+                        </div>
+                    </div>
+                    <div id="discountWarning" class="text-danger small mt-1" style="display:none">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <span id="discountWarningText"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cart -->
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Items</h5>
+                <span class="badge bg-primary" id="cartCount">0 items</span>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table" id="cartTable">
+                        <thead>
+                            <tr>
+                                <th>Product</th>
+                                <th>Sale / unit</th>
+                                <th>Qty</th>
+                                <th>Disc ({{ currency }})</th>
+                                <th>Total</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="cartBody"></tbody>
+                    </table>
+                </div>
+
+                <hr>
+                <div class="row">
+                    <div class="col-md-7 offset-md-5 text-end">
+                        <table class="table table-borderless mb-0">
+                            <tr>
+                                <td>Subtotal:</td>
+                                <td class="fw-bold" id="subtotal">0.00</td>
+                            </tr>
+                            <tr class="text-success">
+                                <td>Discount:</td>
+                                <td id="discountTotal">-0.00</td>
+                            </tr>
+                            {% if tax_rate > 0 %}
+                            <tr>
+                                <td>Tax ({{ (tax_rate * 100)|int }}%):</td>
+                                <td id="taxAmount">0.00</td>
+                            </tr>
+                            {% endif %}
+                            <tr class="fs-5">
+                                <td><strong>Total:</strong></td>
+                                <td class="fw-bold text-primary" id="totalAmount">{{ currency }} 0.00</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="d-flex justify-content-end gap-2 mt-3">
+                    <a href="{{ url_for('invoice_detail', invoice_id=invoice.invoice_id) }}"
+                       class="btn btn-secondary btn-lg">
+                        <i class="bi bi-x-circle"></i> Cancel
+                    </a>
+                    <button class="btn btn-warning btn-lg" id="submitBtn" onclick="saveChanges()" disabled>
+                        <i class="bi bi-save"></i> Save &amp; Reprint
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const TAX_RATE = {{ tax_rate }};
+const CURRENCY = "{{ currency }}";
+const INVOICE_ID = {{ invoice.invoice_id }};
+
+// Products lookup: product_id -> product data (with adjusted stock)
+const PRODUCTS = {};
+{% for p in products %}
+PRODUCTS[{{ p.product_id }}] = {
+    product_id: {{ p.product_id }},
+    name: {{ p.name | tojson }},
+    purchase_price: {{ p.purchase_price | float }},
+    counter_price: {{ p.counter_price | float }},
+    retail_price: {{ p.retail_price | float }},
+    quantity: {{ p.quantity | int }},
+    barcode: {{ (p.barcode or '') | tojson }},
+};
+{% endfor %}
+
+let cart = [];
+let searchTimeout = null;
+
+// Pre-populate cart from existing invoice items
+const OLD_ITEMS = {{ old_items | tojson }};
+OLD_ITEMS.forEach(item => {
+    const pid = parseInt(item.product_id);
+    const prod = PRODUCTS[pid];
+    const qty = parseInt(item.quantity);
+    const discTotal = parseFloat(item.discount_amount) || 0;
+    const discPerUnit = qty > 0 ? discTotal / qty : 0;
+    const unitPrice = parseFloat(item.counter_price);
+    const purchasePrice = parseFloat(item.purchase_price);
+    const maxStock = prod ? prod.quantity : qty;
+    cart.push({
+        product_id: pid,
+        product_name: item.product_name,
+        list_counter: prod ? prod.counter_price : unitPrice,
+        unit_price: unitPrice,
+        purchase_price: purchasePrice,
+        quantity: qty,
+        discount_per_unit: discPerUnit,
+        discount_total: discTotal,
+        line_total: parseFloat(item.line_total),
+        max_stock: maxStock,
+    });
+});
+renderCart();
+
+function escapeHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function getSelectedUnitPrice() {
+    const v = parseFloat(document.getElementById('selSalePrice').value);
+    if (Number.isFinite(v)) return v;
+    return parseFloat(document.getElementById('selListCounter').textContent) || 0;
+}
+
+document.getElementById('selDiscount').addEventListener('input', validateDiscount);
+document.getElementById('selSalePrice').addEventListener('input', validateDiscount);
+
+function validateDiscount() {
+    const unitPrice = getSelectedUnitPrice();
+    const purchasePrice = parseFloat(document.getElementById('selPurchase').textContent);
+    const discAmt = parseFloat(document.getElementById('selDiscount').value) || 0;
+    const discounted = unitPrice - discAmt;
+    const warning = document.getElementById('discountWarning');
+    const maxDisc = Math.max(0, unitPrice - purchasePrice).toFixed(2);
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        document.getElementById('discountWarningText').textContent = 'Enter a valid sale price.';
+        warning.style.display = 'block'; return false;
+    }
+    if (discAmt < 0) {
+        document.getElementById('discountWarningText').textContent = 'Discount cannot be negative.';
+        warning.style.display = 'block'; return false;
+    }
+    if (discounted < purchasePrice) {
+        document.getElementById('discountWarningText').textContent =
+            `Price after discount (${discounted.toFixed(2)}) is below purchase (${purchasePrice.toFixed(2)}). Max: ${CURRENCY} ${maxDisc}`;
+        warning.style.display = 'block'; return false;
+    }
+    warning.style.display = 'none'; return true;
+}
+
+document.getElementById('searchInput').addEventListener('input', function() {
+    clearTimeout(searchTimeout);
+    const q = this.value.trim();
+    if (q.length < 1) { document.getElementById('searchResults').innerHTML = ''; return; }
+    searchTimeout = setTimeout(() => {
+        fetch('/api/products/search?q=' + encodeURIComponent(q))
+            .then(r => r.json())
+            .then(products => {
+                const div = document.getElementById('searchResults');
+                if (!products.length) {
+                    div.innerHTML = '<div class="list-group-item text-muted">No products found</div>';
+                    return;
+                }
+                div.innerHTML = products.map((p, idx) => {
+                    const name = escapeHtml(p.name);
+                    const pid = parseInt(p.product_id);
+                    // Use adjusted stock from PRODUCTS if available
+                    const stock = PRODUCTS[pid] ? PRODUCTS[pid].quantity : p.quantity;
+                    return `<button class="list-group-item list-group-item-action" data-product-idx="${idx}">
+                        <strong>${name}</strong>
+                        <small class="text-muted ms-2">Counter: ${CURRENCY} ${parseFloat(p.counter_price).toFixed(2)} | Stock: ${stock}</small>
+                    </button>`;
+                }).join('');
+                div.querySelectorAll('[data-product-idx]').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const p = products[parseInt(btn.dataset.productIdx)];
+                        const pid = parseInt(p.product_id);
+                        if (PRODUCTS[pid]) p.quantity = PRODUCTS[pid].quantity;
+                        selectProduct(p);
+                    });
+                });
+            });
+    }, 300);
+});
+
+function selectProduct(product) {
+    document.getElementById('searchResults').innerHTML = '';
+    document.getElementById('searchInput').value = '';
+    document.getElementById('selectedProduct').style.display = 'block';
+    document.getElementById('selName').textContent = product.name;
+    document.getElementById('selPurchase').textContent = parseFloat(product.purchase_price).toFixed(2);
+    const listCounter = parseFloat(product.counter_price);
+    document.getElementById('selListCounter').textContent = listCounter.toFixed(2);
+    document.getElementById('selMRP').textContent = parseFloat(product.retail_price).toFixed(2);
+    document.getElementById('selStock').textContent = product.quantity;
+    document.getElementById('selId').value = product.product_id;
+    document.getElementById('selQty').value = 1;
+    document.getElementById('selQty').max = product.quantity;
+    document.getElementById('selDiscount').value = 0;
+    document.getElementById('selSalePrice').value = listCounter.toFixed(2);
+    document.getElementById('discountWarning').style.display = 'none';
+    document.getElementById('selSalePrice').focus();
+}
+
+function addToCart() {
+    if (!validateDiscount()) {
+        alert('Fix sale price or discount before adding.');
+        return;
+    }
+    const id = parseInt(document.getElementById('selId').value);
+    const name = document.getElementById('selName').textContent;
+    const listCounter = parseFloat(document.getElementById('selListCounter').textContent);
+    const unitPrice = getSelectedUnitPrice();
+    const purchasePrice = parseFloat(document.getElementById('selPurchase').textContent);
+    const qty = parseInt(document.getElementById('selQty').value);
+    const discAmt = parseFloat(document.getElementById('selDiscount').value) || 0;
+    const maxStock = parseInt(document.getElementById('selStock').textContent);
+    if (qty <= 0 || qty > maxStock) {
+        alert('Invalid quantity. Available: ' + maxStock);
+        return;
+    }
+    const existing = cart.find(item =>
+        item.product_id === id &&
+        item.discount_per_unit === discAmt &&
+        Math.abs(item.unit_price - unitPrice) < 1e-9
+    );
+    if (existing) {
+        const newQty = existing.quantity + qty;
+        if (newQty > maxStock) {
+            alert('Total quantity exceeds stock. Available: ' + maxStock + ', In cart: ' + existing.quantity);
+            return;
+        }
+        existing.quantity = newQty;
+        existing.discount_total = discAmt * newQty;
+        existing.line_total = (unitPrice - discAmt) * newQty;
+    } else {
+        cart.push({
+            product_id: id, product_name: name, list_counter: listCounter,
+            unit_price: unitPrice, purchase_price: purchasePrice,
+            quantity: qty, discount_per_unit: discAmt,
+            discount_total: discAmt * qty,
+            line_total: (unitPrice - discAmt) * qty,
+            max_stock: maxStock,
+        });
+    }
+    document.getElementById('selectedProduct').style.display = 'none';
+    renderCart();
+}
+
+function removeFromCart(index) { cart.splice(index, 1); renderCart(); }
+
+function updateQty(index, newQty) {
+    const item = cart[index];
+    newQty = parseInt(newQty);
+    if (newQty <= 0) { removeFromCart(index); return; }
+    if (newQty > item.max_stock) { alert('Exceeds available stock: ' + item.max_stock); return; }
+    item.quantity = newQty;
+    item.discount_total = item.discount_per_unit * newQty;
+    item.line_total = (item.unit_price - item.discount_per_unit) * newQty;
+    renderCart();
+}
+
+function updateDiscount(index, newDisc) {
+    const item = cart[index];
+    newDisc = parseFloat(newDisc) || 0;
+    if (newDisc < 0) newDisc = 0;
+    const after = item.unit_price - newDisc;
+    if (after < item.purchase_price) {
+        const maxDisc = Math.max(0, item.unit_price - item.purchase_price).toFixed(2);
+        alert(`Discount too high! Max: ${CURRENCY} ${maxDisc}`);
+        return;
+    }
+    item.discount_per_unit = newDisc;
+    item.discount_total = newDisc * item.quantity;
+    item.line_total = after * item.quantity;
+    renderCart();
+}
+
+function updateUnitPrice(index, newPrice) {
+    const item = cart[index];
+    newPrice = parseFloat(newPrice);
+    if (!Number.isFinite(newPrice) || newPrice < 0) { alert('Enter a valid sale price.'); renderCart(); return; }
+    const after = newPrice - item.discount_per_unit;
+    if (after < item.purchase_price) {
+        alert(`Sale price too low. Price after discount (${after.toFixed(2)}) is below purchase (${item.purchase_price.toFixed(2)}).`);
+        renderCart(); return;
+    }
+    item.unit_price = newPrice;
+    item.line_total = after * item.quantity;
+    item.discount_total = item.discount_per_unit * item.quantity;
+    renderCart();
+}
+
+function renderCart() {
+    const tbody = document.getElementById('cartBody');
+    if (cart.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Cart is empty.</td></tr>`;
+        document.getElementById('submitBtn').disabled = true;
+    } else {
+        tbody.innerHTML = cart.map((item, i) => {
+            const listHint = Math.abs(item.unit_price - item.list_counter) > 1e-6
+                ? `<div class="small text-muted">List: ${CURRENCY} ${item.list_counter.toFixed(2)}</div>` : '';
+            return `<tr>
+                <td>${escapeHtml(item.product_name)}${listHint}</td>
+                <td><input type="number" class="form-control form-control-sm" style="width:95px"
+                    value="${item.unit_price.toFixed(2)}" min="0" step="0.01"
+                    onchange="updateUnitPrice(${i}, this.value)"></td>
+                <td><input type="number" class="form-control form-control-sm" style="width:70px"
+                    value="${item.quantity}" min="1" max="${item.max_stock}"
+                    onchange="updateQty(${i}, this.value)"></td>
+                <td><input type="number" class="form-control form-control-sm" style="width:80px"
+                    value="${item.discount_per_unit}" min="0" step="0.01"
+                    onchange="updateDiscount(${i}, this.value)"></td>
+                <td>${CURRENCY} ${item.line_total.toFixed(2)}</td>
+                <td><button class="btn btn-sm btn-outline-danger" onclick="removeFromCart(${i})"><i class="bi bi-x"></i></button></td>
+            </tr>`;
+        }).join('');
+        document.getElementById('submitBtn').disabled = false;
+    }
+
+    const subtotal = cart.reduce((s, item) => s + item.unit_price * item.quantity, 0);
+    const discountTotal = cart.reduce((s, item) => s + item.discount_total, 0);
+    const net = subtotal - discountTotal;
+    const tax = net * TAX_RATE;
+    const total = net + tax;
+    document.getElementById('subtotal').textContent = CURRENCY + ' ' + subtotal.toFixed(2);
+    document.getElementById('discountTotal').textContent = '-' + CURRENCY + ' ' + discountTotal.toFixed(2);
+    const taxEl = document.getElementById('taxAmount');
+    if (taxEl) taxEl.textContent = CURRENCY + ' ' + tax.toFixed(2);
+    document.getElementById('totalAmount').textContent = CURRENCY + ' ' + total.toFixed(2);
+    document.getElementById('cartCount').textContent = cart.length + ' item' + (cart.length !== 1 ? 's' : '');
+}
+
+function saveChanges() {
+    if (cart.length === 0) return;
+    const payload = {
+        items: cart.map(item => ({
+            product_id: item.product_id,
+            quantity: item.quantity,
+            discount_amount: item.discount_per_unit,
+            unit_price: item.unit_price,
+        })),
+    };
+    document.getElementById('submitBtn').disabled = true;
+    document.getElementById('submitBtn').innerHTML = '<i class="bi bi-hourglass"></i> Saving...';
+    fetch('/invoices/' + INVOICE_ID + '/edit', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error: ' + data.error);
+            document.getElementById('submitBtn').disabled = false;
+            document.getElementById('submitBtn').innerHTML = '<i class="bi bi-save"></i> Save & Reprint';
+        } else {
+            window.location.href = '/invoices/' + data.invoice_id + '/receipt';
+        }
+    })
+    .catch(() => {
+        alert('Network error. Please try again.');
+        document.getElementById('submitBtn').disabled = false;
+        document.getElementById('submitBtn').innerHTML = '<i class="bi bi-save"></i> Save & Reprint';
+    });
+}
+</script>
+{% endblock %}

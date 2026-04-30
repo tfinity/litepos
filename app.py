@@ -268,6 +268,43 @@ def quotation_preview():
     )
 
 
+@app.route("/invoices/<int:invoice_id>/edit", methods=["GET", "POST"])
+def invoice_edit(invoice_id):
+    invoice = excel_db.get_invoice(invoice_id)
+    if not invoice:
+        flash("Invoice not found.", "danger")
+        return redirect(url_for("invoices"))
+    if request.method == "POST":
+        data = request.get_json()
+        items = data.get("items", [])
+        if not items:
+            return jsonify({"error": "No items in invoice"}), 400
+        try:
+            excel_db.update_invoice(invoice_id, items, TAX_RATE)
+            return jsonify({"invoice_id": invoice_id})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    invoice = dict(invoice)
+    cmap = excel_db.customer_lookup()
+    _attach_customer(invoice, cmap)
+    old_items = excel_db.get_invoice_items(invoice_id)
+    # Effective available stock = current stock + qty locked in this invoice
+    stock_adj = {}
+    for item in old_items:
+        pid = int(item["product_id"])
+        stock_adj[pid] = stock_adj.get(pid, 0) + int(item["quantity"])
+    products = excel_db.get_all_products()
+    for p in products:
+        adj = stock_adj.get(int(p["product_id"]), 0)
+        p["quantity"] = int(p["quantity"]) + adj
+    products = [p for p in products if int(p["quantity"]) > 0]
+    return render_template("invoice_edit.html",
+                           invoice=invoice,
+                           old_items=old_items,
+                           products=products,
+                           tax_rate=TAX_RATE)
+
+
 @app.route("/invoices/<int:invoice_id>/receipt")
 def invoice_receipt(invoice_id):
     invoice = excel_db.get_invoice(invoice_id)

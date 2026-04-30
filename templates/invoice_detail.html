@@ -6,8 +6,12 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h4 class="mb-0">Invoice INV-{{ "%04d"|format(invoice.invoice_id) }}</h4>
-                <a href="{{ url_for('invoice_receipt', invoice_id=invoice.invoice_id) }}"
-                   class="btn btn-success"><i class="bi bi-printer"></i> Print Receipt</a>
+                <div class="d-flex gap-2">
+                    <a href="{{ url_for('invoice_edit', invoice_id=invoice.invoice_id) }}"
+                       class="btn btn-warning"><i class="bi bi-pencil-square"></i> Edit Invoice</a>
+                    <a href="{{ url_for('invoice_receipt', invoice_id=invoice.invoice_id) }}"
+                       class="btn btn-success"><i class="bi bi-printer"></i> Print Receipt</a>
+                </div>
             </div>
             <div class="card-body">
                 <div class="row mb-3">
