@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Quotation - {{ business_name }}</title>
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            max-width: 290px;
+            margin: 20px auto;
+            padding: 10px;
+        }
+        .receipt-header { text-align: center; border-bottom: 2px dashed #000; padding-bottom: 10px; margin-bottom: 10px; }
+        .receipt-header h3 { margin: 0; font-size: 18px; }
+        .receipt-header p { margin: 2px 0; font-size: 12px; }
+        .quotation-badge {
+            text-align: center;
+            border: 2px solid #000;
+            padding: 4px;
+            margin-bottom: 8px;
+            font-weight: bold;
+            font-size: 15px;
+            letter-spacing: 2px;
+        }
+        .receipt-info { margin-bottom: 10px; font-size: 12px; }
+        .receipt-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+        .receipt-table th { border-bottom: 1px dashed #000; text-align: left; padding: 4px 0; font-size: 12px; }
+        .receipt-table td { padding: 3px 0; font-size: 13px; }
+        .receipt-table .text-right { text-align: right; }
+        .receipt-table .text-center { text-align: center; }
+        .receipt-totals { border-top: 1px dashed #000; padding-top: 8px; margin-top: 5px; }
+        .receipt-totals table { width: 100%; }
+        .receipt-totals td { padding: 2px 0; font-size: 13px; }
+        .receipt-totals .grand-total { font-size: 16px; font-weight: bold; border-top: 2px dashed #000; padding-top: 5px; }
+        .receipt-footer { text-align: center; border-top: 2px dashed #000; padding-top: 10px; margin-top: 15px; font-size: 12px; }
+        .disc-line { font-size: 11px; color: #666; }
+        .btn-print { display: block; width: 100%; padding: 10px; margin-top: 20px; font-size: 16px; cursor: pointer; background: #0d6efd; color: white; border: none; border-radius: 5px; }
+        .btn-back { display: block; width: 100%; padding: 8px; margin-top: 10px; font-size: 14px; cursor: pointer; background: #6c757d; color: white; border: none; border-radius: 5px; text-align: center; text-decoration: none; }
+        @media print {
+            .no-print { display: none !important; }
+            @page {
+                size: 76mm auto;
+                margin: 2mm;
+            }
+            html, body {
+                width: 76mm;
+                margin: 0;
+                padding: 0;
+                font-size: 11px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="receipt-header">
+        <h3>{{ business_name }}</h3>
+        <p>{{ business_address }}</p>
+        <p>Tel: {{ business_phone }}</p>
+    </div>
+
+    <div class="quotation-badge">*** QUOTATION ***</div>
+
+    <div class="receipt-info">
+        <strong>Date:</strong> {{ generated_at.strftime('%Y-%m-%d %H:%M') }}<br>
+        {% if customer %}
+        <strong>Customer:</strong> {{ customer.name }}
+        {% if customer.phone %}<br><span style="font-size:11px">Tel: {{ customer.phone }}</span>{% endif %}
+        {% endif %}
+    </div>
+
+    <table class="receipt-table">
+        <thead>
+            <tr>
+                <th>Item</th>
+                <th class="text-center">Qty</th>
+                <th class="text-right">Price</th>
+                <th class="text-right">Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td>{{ item.product_name }}</td>
+                <td class="text-center">{{ item.quantity }}</td>
+                <td class="text-right">{{ "{:,.2f}".format(item.counter_price) }}</td>
+                <td class="text-right">{{ "{:,.2f}".format(item.line_total) }}</td>
+            </tr>
+            {% if item.discount_amount %}
+            <tr class="disc-line">
+                <td colspan="4">&nbsp;&nbsp;Disc: -{{ "{:,.2f}".format(item.discount_amount) }}</td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="receipt-totals">
+        <table>
+            <tr>
+                <td>Subtotal:</td>
+                <td class="text-right">{{ "{:,.2f}".format(subtotal) }}</td>
+            </tr>
+            {% if discount_total %}
+            <tr>
+                <td>Discount:</td>
+                <td class="text-right">-{{ "{:,.2f}".format(discount_total) }}</td>
+            </tr>
+            {% endif %}
+            {% if tax_rate and tax_amount %}
+            <tr>
+                <td>Tax ({{ (tax_rate * 100)|int }}%):</td>
+                <td class="text-right">{{ "{:,.2f}".format(tax_amount) }}</td>
+            </tr>
+            {% endif %}
+            <tr class="grand-total">
+                <td>TOTAL:</td>
+                <td class="text-right">{{ currency }} {{ "{:,.2f}".format(total) }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="receipt-footer">
+        <p><strong>This is a quotation only.</strong></p>
+        <p style="font-size:11px;">Not a tax invoice. Prices subject to change.</p>
+        {% if receipt_footer %}
+        <p style="font-size:10px; margin-top:6px;">{{ receipt_footer }}</p>
+        {% endif %}
+        <p>{{ business_name }}</p>
+    </div>
+
+    <button class="btn-print no-print" onclick="window.print()">Print Quotation</button>
+    <button class="btn-back no-print" onclick="window.close()">Close</button>
+</body>
+</html>

@@ -203,6 +203,71 @@ def invoice_detail(invoice_id):
                            invoice=invoice, items=items)
 
 
+@app.route("/quotation/preview", methods=["POST"])
+def quotation_preview():
+    import json
+    raw = request.form.get("data") or ""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return "Invalid quotation data.", 400
+
+    cart_items = data.get("items", [])
+    if not cart_items:
+        return "No items in quotation.", 400
+
+    customer = None
+    cid = excel_db.normalize_customer_id(data.get("customer_id"))
+    if cid is not None:
+        cmap = excel_db.customer_lookup()
+        customer = cmap.get(cid)
+
+    line_items = []
+    subtotal = 0.0
+    discount_total = 0.0
+
+    for item in cart_items:
+        pid = int(item["product_id"])
+        qty = int(item["quantity"])
+        discount_per_unit = float(item.get("discount_amount", 0))
+        product = excel_db.get_product(pid)
+        if not product:
+            return f"Product {pid} not found.", 400
+        unit_price = float(item.get("unit_price") or product["counter_price"])
+        line_discount = discount_per_unit * qty
+        line_total = (unit_price - discount_per_unit) * qty
+        line_items.append({
+            "product_name": product["name"],
+            "quantity": qty,
+            "counter_price": unit_price,
+            "discount_amount": line_discount,
+            "line_total": round(line_total, 2),
+        })
+        subtotal += unit_price * qty
+        discount_total += line_discount
+
+    net = subtotal - discount_total
+    tax_amount = round(net * TAX_RATE, 2)
+    total = round(net + tax_amount, 2)
+
+    from datetime import datetime as _dt
+    return render_template(
+        "quotation_receipt.html",
+        items=line_items,
+        subtotal=round(subtotal, 2),
+        discount_total=round(discount_total, 2),
+        tax_rate=TAX_RATE,
+        tax_amount=tax_amount,
+        total=total,
+        customer=customer,
+        generated_at=_dt.now(),
+        business_name=BUSINESS_NAME,
+        business_address=BUSINESS_ADDRESS,
+        business_phone=BUSINESS_PHONE,
+        receipt_footer=RECEIPT_FOOTER,
+    )
+
+
 @app.route("/invoices/<int:invoice_id>/receipt")
 def invoice_receipt(invoice_id):
     invoice = excel_db.get_invoice(invoice_id)

@@ -150,7 +150,10 @@
                     </div>
                 </div>
 
-                <div class="text-end mt-3">
+                <div class="text-end mt-3 d-flex justify-content-end gap-2">
+                    <button class="btn btn-outline-secondary btn-lg" id="quotationBtn" onclick="printQuotation()" disabled>
+                        <i class="bi bi-file-text"></i> Print Quotation
+                    </button>
                     <button class="btn btn-success btn-lg" id="submitBtn" onclick="submitInvoice()" disabled>
                         <i class="bi bi-check-circle"></i> Complete Sale
                     </button>
@@ -159,6 +162,11 @@
         </div>
     </div>
 </div>
+
+<!-- Hidden form for quotation (submits to new tab, no sale recorded) -->
+<form id="quotationForm" method="POST" action="{{ url_for('quotation_preview') }}" target="_blank">
+    <input type="hidden" id="quotationData" name="data">
+</form>
 
 <!-- Quick add customer -->
 <div class="modal fade" id="quickCustomerModal" tabindex="-1" aria-labelledby="quickCustomerModalLabel" aria-hidden="true">
@@ -517,6 +525,7 @@ function renderCart() {
     if (cart.length === 0) {
         tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Cart is empty.</td></tr>`;
         document.getElementById('submitBtn').disabled = true;
+        document.getElementById('quotationBtn').disabled = true;
     } else {
         tbody.innerHTML = cart.map((item, i) => {
             const listHint = Math.abs(item.unit_price - item.list_counter) > 1e-6
@@ -545,6 +554,7 @@ function renderCart() {
             </tr>`;
         }).join('');
         document.getElementById('submitBtn').disabled = false;
+        document.getElementById('quotationBtn').disabled = false;
     }
 
     const subtotal = cart.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
@@ -569,6 +579,25 @@ function onPaymentMethodChange() {
     } else {
         warn.style.display = 'none';
     }
+}
+
+function printQuotation() {
+    if (cart.length === 0) return;
+    const payload = {
+        items: cart.map(item => ({
+            product_id: item.product_id,
+            quantity: item.quantity,
+            discount_amount: item.discount_per_unit,
+            unit_price: item.unit_price,
+        })),
+    };
+    const cidRaw = document.getElementById('customerId').value.trim();
+    if (cidRaw) {
+        const n = parseInt(cidRaw, 10);
+        if (Number.isFinite(n)) payload.customer_id = n;
+    }
+    document.getElementById('quotationData').value = JSON.stringify(payload);
+    document.getElementById('quotationForm').submit();
 }
 
 function submitInvoice() {
