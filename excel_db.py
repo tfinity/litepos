@@ -808,6 +808,29 @@ def add_ledger_payment(customer_id, amount, note=""):
     return entry_id
 
 
+def add_ledger_debit(customer_id, amount, note=""):
+    """Record a manual debit against a customer (increases their outstanding balance)."""
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        raise ValueError("Invalid customer.")
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    if not get_customer(cid):
+        raise ValueError("Customer not found.")
+    with _lock:
+        wb = _open()
+        if "CreditLedger" not in wb.sheetnames:
+            ws_cl = wb.create_sheet("CreditLedger")
+            ws_cl.append(CREDIT_LEDGER_HEADERS)
+        ws_cl = wb["CreditLedger"]
+        entry_id = _next_id(ws_cl)
+        ws_cl.append([entry_id, cid, None, "debit", amount, (note or "").strip(), datetime.now()])
+        wb.save(DATA_FILE)
+        wb.close()
+    return entry_id
+
+
 def get_customer_balance(customer_id):
     """Return (total_debt, total_paid, balance). Positive balance = customer owes us."""
     entries = get_credit_ledger(customer_id=customer_id)

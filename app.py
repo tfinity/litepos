@@ -513,6 +513,23 @@ def record_credit_payment(customer_id):
     return redirect(request.referrer or url_for("credit_ledger"))
 
 
+@app.route("/credit-ledger/<int:customer_id>/charge", methods=["POST"])
+def record_credit_charge(customer_id):
+    amount_str = request.form.get("amount", "").strip()
+    note = request.form.get("note", "").strip()
+    try:
+        amount = float(amount_str)
+    except (ValueError, TypeError):
+        flash("Invalid amount.", "danger")
+        return redirect(url_for("credit_ledger"))
+    try:
+        excel_db.add_ledger_debit(customer_id, amount, note)
+        flash(f"Charge of {CURRENCY} {amount:.2f} added to outstanding balance.", "warning")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(request.referrer or url_for("credit_ledger"))
+
+
 @app.route("/products/import", methods=["GET", "POST"])
 def product_import():
     if request.method == "POST":
