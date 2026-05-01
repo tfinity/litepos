@@ -620,11 +620,11 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
     return invoice_id
 
 
-def update_invoice(invoice_id, items, tax_rate):
+def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id=None):
     """
     Edit an existing invoice in-place.
-    Returns old stock for every original item, then deducts stock for new items.
-    Updates InvoiceItems, the Invoice row totals, and the CreditLedger debit if Credit.
+    payment_method / customer_id: pass new values to change them; None keeps existing.
+    Handles stock reconciliation and credit ledger (delete old debit, add new if Credit).
     Raises ValueError on validation errors.
     """
     with _lock:
@@ -736,26 +736,54 @@ def update_invoice(invoice_id, items, tax_rate):
         for entry in new_entries:
             ws_items.append(entry)
 
-        # Update invoice row totals
+        # Resolve new payment method / customer
+        old_payment = invoice.get("payment_method")
+        old_cid = normalize_customer_id(invoice.get("customer_id"))
+        new_payment = payment_method if payment_method is not None else old_payment
+        # customer_id sentinel: None means "keep old"; use the string "walkin" or 0 to clear
+        if customer_id is None:
+            new_cid = old_cid
+        else:
+            new_cid = normalize_customer_id(customer_id)
+
+        if new_payment == "Credit" and new_cid is None:
+            wb.close()
+            raise ValueError("Credit payment requires a customer.")
+        if new_cid is not None and not _customer_exists_in_workbook(wb, new_cid):
+            wb.close()
+            raise ValueError("Customer not found.")
+
+        # Update invoice row
         inv_row_ref[2].value = round(subtotal, 2)
         inv_row_ref[3].value = round(discount_total, 2)
         inv_row_ref[4].value = tax_rate
         inv_row_ref[5].value = tax_amount
         inv_row_ref[6].value = total
+        inv_row_ref[7].value = new_payment
+        inv_row_ref[8].value = new_cid
 
-        # Update credit ledger debit if Credit invoice
-        payment_method = invoice.get("payment_method")
-        cid = normalize_customer_id(invoice.get("customer_id"))
-        if payment_method == "Credit" and cid is not None and "CreditLedger" in wb.sheetnames:
+        # Reconcile credit ledger:
+        # Remove any existing debit entry for this invoice (regardless of old customer)
+        if "CreditLedger" in wb.sheetnames:
             ws_cl = wb["CreditLedger"]
-            for row in ws_cl.iter_rows(min_row=2):
+            to_del = []
+            for idx, row in enumerate(ws_cl.iter_rows(min_row=2), start=2):
                 if (row[0].value is not None
-                        and normalize_customer_id(row[1].value) == cid
                         and row[2].value is not None
                         and int(row[2].value) == int(invoice_id)
                         and row[3].value == "debit"):
-                    row[4].value = total
-                    break
+                    to_del.append(idx)
+            for idx in sorted(to_del, reverse=True):
+                ws_cl.delete_rows(idx)
+
+        # Add fresh debit entry if new payment is Credit
+        if new_payment == "Credit" and new_cid is not None:
+            if "CreditLedger" not in wb.sheetnames:
+                ws_cl = wb.create_sheet("CreditLedger")
+                ws_cl.append(CREDIT_LEDGER_HEADERS)
+            ws_cl = wb["CreditLedger"]
+            cl_entry_id = _next_id(ws_cl)
+            ws_cl.append([cl_entry_id, new_cid, invoice_id, "debit", total, "Credit sale", datetime.now()])
 
         wb.save(DATA_FILE)
         wb.close()

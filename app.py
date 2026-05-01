@@ -280,7 +280,11 @@ def invoice_edit(invoice_id):
         if not items:
             return jsonify({"error": "No items in invoice"}), 400
         try:
-            excel_db.update_invoice(invoice_id, items, TAX_RATE)
+            excel_db.update_invoice(
+                invoice_id, items, TAX_RATE,
+                payment_method=data.get("payment_method"),
+                customer_id=data.get("customer_id"),
+            )
             return jsonify({"invoice_id": invoice_id})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
