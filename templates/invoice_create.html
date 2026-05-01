@@ -1,7 +1,13 @@
 {% extends "base.html" %}
 {% block title %}New Sale{% endblock %}
 {% block content %}
-<h2 class="mb-4"><i class="bi bi-cart-plus"></i> New Sale</h2>
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+    <h2 class="mb-0" id="pageTitle"><i class="bi bi-cart-plus"></i> New Sale</h2>
+    <div class="form-check form-switch fs-5 mb-0">
+        <input class="form-check-input" type="checkbox" id="quotationModeToggle" onchange="onModeToggle()">
+        <label class="form-check-label" for="quotationModeToggle">Quotation Mode</label>
+    </div>
+</div>
 
 <div class="card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -205,6 +211,22 @@ const CURRENCY = "{{ currency }}";
 let cart = [];
 let searchTimeout = null;
 let customerSearchTimeout = null;
+let quotationMode = false;
+
+function onModeToggle() {
+    quotationMode = document.getElementById('quotationModeToggle').checked;
+    const title = document.getElementById('pageTitle');
+    if (quotationMode) {
+        title.innerHTML = '<i class="bi bi-file-text"></i> New Quotation';
+        document.getElementById('submitBtn').style.display = 'none';
+        document.getElementById('quotationBtn').style.display = '';
+    } else {
+        title.innerHTML = '<i class="bi bi-cart-plus"></i> New Sale';
+        document.getElementById('submitBtn').style.display = '';
+        document.getElementById('quotationBtn').style.display = '';
+    }
+    renderCart();
+}
 
 function escapeHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -394,7 +416,7 @@ function selectProduct(product) {
     document.getElementById('selStock').textContent = product.quantity;
     document.getElementById('selId').value = product.product_id;
     document.getElementById('selQty').value = 1;
-    document.getElementById('selQty').max = product.quantity;
+    document.getElementById('selQty').max = quotationMode ? 999999 : product.quantity;
     document.getElementById('selDiscount').value = 0;
     document.getElementById('selSalePrice').value = listCounter.toFixed(2);
     document.getElementById('discountWarning').style.display = 'none';
@@ -416,7 +438,7 @@ function addToCart() {
     const discAmt = parseFloat(document.getElementById('selDiscount').value) || 0;
     const maxStock = parseInt(document.getElementById('selStock').textContent);
 
-    if (qty <= 0 || qty > maxStock) {
+    if (qty <= 0 || (!quotationMode && qty > maxStock)) {
         alert('Invalid quantity. Available stock: ' + maxStock);
         return;
     }
@@ -431,7 +453,7 @@ function addToCart() {
     );
     if (existing) {
         const newQty = existing.quantity + qty;
-        if (newQty > maxStock) {
+        if (!quotationMode && newQty > maxStock) {
             alert('Total quantity exceeds stock. Available: ' + maxStock + ', In cart: ' + existing.quantity);
             return;
         }
@@ -469,7 +491,7 @@ function updateQty(index, newQty) {
         removeFromCart(index);
         return;
     }
-    if (newQty > item.max_stock) {
+    if (!quotationMode && newQty > item.max_stock) {
         alert('Exceeds available stock: ' + item.max_stock);
         return;
     }
@@ -531,8 +553,11 @@ function renderCart() {
             const listHint = Math.abs(item.unit_price - item.list_counter) > 1e-6
                 ? `<div class="small text-muted">List: ${CURRENCY} ${item.list_counter.toFixed(2)}</div>`
                 : '';
+            const stockHint = quotationMode && item.quantity > item.max_stock
+                ? `<div class="small text-warning"><i class="bi bi-exclamation-triangle"></i> Stock: ${item.max_stock}</div>`
+                : '';
             return `<tr>
-                <td>${item.product_name}${listHint}</td>
+                <td>${escapeHtml(item.product_name)}${listHint}${stockHint}</td>
                 <td>
                     <input type="number" class="form-control form-control-sm" style="width:95px"
                            value="${item.unit_price.toFixed(2)}" min="0" step="0.01"
@@ -555,6 +580,7 @@ function renderCart() {
         }).join('');
         document.getElementById('submitBtn').disabled = false;
         document.getElementById('quotationBtn').disabled = false;
+        if (quotationMode) document.getElementById('submitBtn').style.display = 'none';
     }
 
     const subtotal = cart.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
