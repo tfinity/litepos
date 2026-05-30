@@ -2,8 +2,6 @@
 
 A lightweight, open-source Point of Sale system for small businesses — pharmacies, retail shops, general stores. Built with Python Flask, runs on any machine with a browser. No expensive POS hardware or subscription required.
 
-**Live demo:** https://pos.animalnexus.com.pk
-
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![Flask](https://img.shields.io/badge/Flask-3.1-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -164,4 +162,3 @@ MIT — free to use, modify, and distribute. See [LICENSE](LICENSE).
 
 ---
 
-*Built with [Claude AI](https://claude.ai)*
