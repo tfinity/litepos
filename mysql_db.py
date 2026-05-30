@@ -93,6 +93,16 @@ def init_workbook():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id       INT AUTO_INCREMENT PRIMARY KEY,
+                    username      VARCHAR(100) NOT NULL UNIQUE,
+                    password_hash VARCHAR(255) NOT NULL,
+                    role          ENUM('admin','staff') DEFAULT 'staff',
+                    is_active     TINYINT(1) DEFAULT 1,
+                    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS credit_ledger (
                     entry_id    INT AUTO_INCREMENT PRIMARY KEY,
                     customer_id INT,
@@ -801,3 +811,85 @@ def import_from_excel(filepath):
 
     wb_src.close()
     return imported, skipped, errors
+
+
+# ── Users ─────────────────────────────────────────────────────────────
+
+def get_all_users():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users ORDER BY user_id")
+            rows = cur.fetchall()
+    for u in rows:
+        u["is_active"] = bool(u["is_active"])
+    return rows
+
+
+def get_user_by_id(user_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE user_id = %s", (int(user_id),))
+            row = cur.fetchone()
+    if row:
+        row["is_active"] = bool(row["is_active"])
+    return row
+
+
+def get_user_by_username(username):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE username = %s", (username.strip().lower(),))
+            row = cur.fetchone()
+    if row:
+        row["is_active"] = bool(row["is_active"])
+    return row
+
+
+def has_any_users():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM users")
+            return cur.fetchone()["cnt"] > 0
+
+
+def add_user(username, password_hash, role="staff"):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users (username, password_hash, role, is_active, created_at)
+                VALUES (%s, %s, %s, 1, %s)
+            """, (username.strip().lower(), password_hash, role, datetime.now()))
+            return cur.lastrowid
+
+
+def update_user_password(user_id, password_hash):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET password_hash = %s WHERE user_id = %s",
+                (password_hash, int(user_id))
+            )
+
+
+def set_user_role(user_id, role):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET role = %s WHERE user_id = %s",
+                (role, int(user_id))
+            )
+
+
+def toggle_user_active(user_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET is_active = NOT is_active WHERE user_id = %s",
+                (int(user_id),)
+            )
+
+
+def delete_user(user_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE user_id = %s", (int(user_id),))

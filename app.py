@@ -1,7 +1,8 @@
-"""Flask POS Application - Excel-based Point of Sale System."""
+"""Flask POS Application - Point of Sale System."""
 
 import os
 from datetime import date
+from functools import wraps
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,13 +11,18 @@ from flask import (
     Flask, render_template, request, redirect, url_for,
     flash, jsonify,
 )
+from flask_login import (
+    LoginManager, UserMixin, login_user, logout_user,
+    login_required, current_user,
+)
+from werkzeug.security import generate_password_hash, check_password_hash
 
 import db as excel_db
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
 
-# Configuration - override via environment variables or edit directly
+# Configuration
 TAX_RATE = float(os.environ.get("TAX_RATE", "0.0"))
 LOW_STOCK_THRESHOLD = int(os.environ.get("LOW_STOCK_THRESHOLD", "10"))
 EXPIRY_WARNING_DAYS = int(os.environ.get("EXPIRY_WARNING_DAYS", "30"))
@@ -26,9 +32,180 @@ BUSINESS_PHONE = os.environ.get("BUSINESS_PHONE", "+1 000 000 0000")
 CURRENCY = os.environ.get("CURRENCY", "USD")
 RECEIPT_FOOTER = os.environ.get("RECEIPT_FOOTER", "")
 
-# Initialize Excel workbook on startup
 excel_db.init_workbook()
 
+# ── Auth ──────────────────────────────────────────────────────────────
+
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+
+
+class User(UserMixin):
+    def __init__(self, data):
+        self.id = str(data["user_id"])
+        self.username = data["username"]
+        self.role = data["role"]
+        self._is_active = bool(data.get("is_active", True))
+
+    @property
+    def is_active(self):
+        return self._is_active
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    u = excel_db.get_user_by_id(int(user_id))
+    return User(u) if u else None
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or current_user.role != "admin":
+            flash("Admin access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+_PUBLIC_ENDPOINTS = {"login", "setup", "static"}
+
+
+@app.before_request
+def auth_gate():
+    if request.endpoint in _PUBLIC_ENDPOINTS:
+        return
+    if not excel_db.has_any_users():
+        return redirect(url_for("setup"))
+    if not current_user.is_authenticated:
+        return redirect(url_for("login"))
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    if excel_db.has_any_users():
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+        if not username or not password:
+            flash("Username and password are required.", "danger")
+            return render_template("setup.html")
+        if password != confirm:
+            flash("Passwords do not match.", "danger")
+            return render_template("setup.html")
+        if len(password) < 6:
+            flash("Password must be at least 6 characters.", "danger")
+            return render_template("setup.html")
+        uid = excel_db.add_user(username, generate_password_hash(password), role="admin")
+        u = excel_db.get_user_by_id(uid)
+        login_user(User(u))
+        flash(f"Welcome, {username}! You are logged in as admin.", "success")
+        return redirect(url_for("dashboard"))
+    return render_template("setup.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        u = excel_db.get_user_by_username(username)
+        if u and u.get("is_active") and check_password_hash(u["password_hash"], password):
+            login_user(User(u))
+            return redirect(request.args.get("next") or url_for("dashboard"))
+        flash("Invalid username or password.", "danger")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
+
+
+@app.route("/users")
+@login_required
+@admin_required
+def users_list():
+    users = excel_db.get_all_users()
+    return render_template("users.html", users=users)
+
+
+@app.route("/users/add", methods=["POST"])
+@login_required
+@admin_required
+def user_add():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    role = request.form.get("role", "staff")
+    if not username or not password:
+        flash("Username and password are required.", "danger")
+        return redirect(url_for("users_list"))
+    if len(password) < 6:
+        flash("Password must be at least 6 characters.", "danger")
+        return redirect(url_for("users_list"))
+    if excel_db.get_user_by_username(username):
+        flash("Username already exists.", "danger")
+        return redirect(url_for("users_list"))
+    excel_db.add_user(username, generate_password_hash(password), role=role)
+    flash(f"User '{username}' added.", "success")
+    return redirect(url_for("users_list"))
+
+
+@app.route("/users/<int:user_id>/password", methods=["POST"])
+@login_required
+@admin_required
+def user_change_password(user_id):
+    password = request.form.get("password", "")
+    if len(password) < 6:
+        flash("Password must be at least 6 characters.", "danger")
+        return redirect(url_for("users_list"))
+    excel_db.update_user_password(user_id, generate_password_hash(password))
+    flash("Password updated.", "success")
+    return redirect(url_for("users_list"))
+
+
+@app.route("/users/<int:user_id>/role", methods=["POST"])
+@login_required
+@admin_required
+def user_change_role(user_id):
+    if str(user_id) == current_user.id:
+        flash("Cannot change your own role.", "danger")
+        return redirect(url_for("users_list"))
+    role = request.form.get("role", "staff")
+    excel_db.set_user_role(user_id, role)
+    flash("Role updated.", "success")
+    return redirect(url_for("users_list"))
+
+
+@app.route("/users/<int:user_id>/toggle", methods=["POST"])
+@login_required
+@admin_required
+def user_toggle(user_id):
+    if str(user_id) == current_user.id:
+        flash("Cannot deactivate your own account.", "danger")
+        return redirect(url_for("users_list"))
+    excel_db.toggle_user_active(user_id)
+    return redirect(url_for("users_list"))
+
+
+@app.route("/users/<int:user_id>/delete", methods=["POST"])
+@login_required
+@admin_required
+def user_delete(user_id):
+    if str(user_id) == current_user.id:
+        flash("Cannot delete your own account.", "danger")
+        return redirect(url_for("users_list"))
+    excel_db.delete_user(user_id)
+    flash("User deleted.", "success")
+    return redirect(url_for("users_list"))
+
+
+# ── Globals ───────────────────────────────────────────────────────────
 
 @app.context_processor
 def inject_globals():
@@ -42,6 +219,7 @@ def inject_globals():
 # ── Dashboard ────────────────────────────────────────────────────────
 
 @app.route("/")
+@login_required
 def dashboard():
     products = excel_db.get_all_products()
     low_stock = excel_db.get_low_stock_products(LOW_STOCK_THRESHOLD)
@@ -63,6 +241,7 @@ def dashboard():
 # ── Products ─────────────────────────────────────────────────────────
 
 @app.route("/products")
+@login_required
 def products():
     all_products = excel_db.get_all_products()
     return render_template("products.html",
@@ -71,6 +250,7 @@ def products():
 
 
 @app.route("/products/add", methods=["GET", "POST"])
+@login_required
 def product_add():
     if request.method == "POST":
         data = {
@@ -95,6 +275,7 @@ def product_add():
 
 
 @app.route("/products/<int:product_id>/edit", methods=["GET", "POST"])
+@login_required
 def product_edit(product_id):
     product = excel_db.get_product(product_id)
     if not product:
@@ -123,6 +304,7 @@ def product_edit(product_id):
 
 
 @app.route("/products/<int:product_id>/delete", methods=["POST"])
+@login_required
 def product_delete(product_id):
     excel_db.delete_product(product_id)
     flash("Product deleted.", "success")
@@ -132,6 +314,7 @@ def product_delete(product_id):
 # ── Reports ──────────────────────────────────────────────────────────
 
 @app.route("/stock-report")
+@login_required
 def stock_report():
     products = excel_db.get_all_products()
     products.sort(key=lambda p: int(p["quantity"]))
@@ -141,6 +324,7 @@ def stock_report():
 
 
 @app.route("/expiry-report")
+@login_required
 def expiry_report():
     products = excel_db.get_expiry_products(EXPIRY_WARNING_DAYS)
     return render_template("expiry_report.html", products=products)
@@ -149,12 +333,12 @@ def expiry_report():
 # ── Invoices ─────────────────────────────────────────────────────────
 
 def _attach_customer(invoice, cmap):
-    """Mutate invoice dict with optional ``customer`` profile (or None)."""
     cid = excel_db.normalize_customer_id(invoice.get("customer_id"))
     invoice["customer"] = cmap.get(cid) if cid is not None else None
 
 
 @app.route("/invoices")
+@login_required
 def invoices():
     cmap = excel_db.customer_lookup()
     all_invoices = []
@@ -166,6 +350,7 @@ def invoices():
 
 
 @app.route("/invoices/create", methods=["GET", "POST"])
+@login_required
 def invoice_create():
     if request.method == "POST":
         data = request.get_json()
@@ -175,9 +360,7 @@ def invoice_create():
             return jsonify({"error": "No items in invoice"}), 400
         try:
             invoice_id = excel_db.create_invoice(
-                items,
-                TAX_RATE,
-                payment_method,
+                items, TAX_RATE, payment_method,
                 customer_id=data.get("customer_id"),
             )
             return jsonify({"invoice_id": invoice_id})
@@ -190,6 +373,7 @@ def invoice_create():
 
 
 @app.route("/invoices/<int:invoice_id>")
+@login_required
 def invoice_detail(invoice_id):
     invoice = excel_db.get_invoice(invoice_id)
     if not invoice:
@@ -204,6 +388,7 @@ def invoice_detail(invoice_id):
 
 
 @app.route("/quotation/preview", methods=["POST"])
+@login_required
 def quotation_preview():
     import json
     raw = request.form.get("data") or ""
@@ -269,6 +454,7 @@ def quotation_preview():
 
 
 @app.route("/invoices/<int:invoice_id>/edit", methods=["GET", "POST"])
+@login_required
 def invoice_edit(invoice_id):
     invoice = excel_db.get_invoice(invoice_id)
     if not invoice:
@@ -292,7 +478,6 @@ def invoice_edit(invoice_id):
     cmap = excel_db.customer_lookup()
     _attach_customer(invoice, cmap)
     old_items = excel_db.get_invoice_items(invoice_id)
-    # Effective available stock = current stock + qty locked in this invoice
     stock_adj = {}
     for item in old_items:
         pid = int(item["product_id"])
@@ -310,6 +495,7 @@ def invoice_edit(invoice_id):
 
 
 @app.route("/invoices/<int:invoice_id>/receipt")
+@login_required
 def invoice_receipt(invoice_id):
     invoice = excel_db.get_invoice(invoice_id)
     if not invoice:
@@ -327,12 +513,10 @@ def invoice_receipt(invoice_id):
                            receipt_footer=RECEIPT_FOOTER)
 
 
-# ── API Endpoints ────────────────────────────────────────────────────
-
 # ── Customers ────────────────────────────────────────────────────────
 
-
 @app.route("/customers")
+@login_required
 def customers_list():
     customers = excel_db.get_all_customers()
     cmap = excel_db.customer_lookup()
@@ -341,14 +525,12 @@ def customers_list():
         cid = excel_db.normalize_customer_id(inv.get("customer_id"))
         if cid is not None and cid in inv_counts:
             inv_counts[cid] += 1
-    return render_template(
-        "customers.html",
-        customers=customers,
-        inv_counts=inv_counts,
-    )
+    return render_template("customers.html",
+                           customers=customers, inv_counts=inv_counts)
 
 
 @app.route("/customers/add", methods=["GET", "POST"])
+@login_required
 def customer_add():
     if request.method == "POST":
         data = {
@@ -369,6 +551,7 @@ def customer_add():
 
 
 @app.route("/customers/<int:customer_id>/edit", methods=["GET", "POST"])
+@login_required
 def customer_edit(customer_id):
     customer = excel_db.get_customer(customer_id)
     if not customer:
@@ -393,6 +576,7 @@ def customer_edit(customer_id):
 
 
 @app.route("/customers/<int:customer_id>/delete", methods=["POST"])
+@login_required
 def customer_delete(customer_id):
     try:
         excel_db.delete_customer(customer_id)
@@ -403,6 +587,7 @@ def customer_delete(customer_id):
 
 
 @app.route("/customers/<int:customer_id>")
+@login_required
 def customer_detail(customer_id):
     customer = excel_db.get_customer(customer_id)
     if not customer:
@@ -431,16 +616,17 @@ def customer_detail(customer_id):
 
 
 @app.route("/customers/sales-summary")
+@login_required
 def customers_sales_summary():
     rows, walk_in = excel_db.get_sales_summary_by_customer()
-    return render_template(
-        "customers_sales_summary.html",
-        rows=rows,
-        walk_in=walk_in,
-    )
+    return render_template("customers_sales_summary.html",
+                           rows=rows, walk_in=walk_in)
 
+
+# ── API ───────────────────────────────────────────────────────────────
 
 @app.route("/api/products/search")
+@login_required
 def api_product_search():
     q = request.args.get("q", "")
     if len(q) < 1:
@@ -465,6 +651,7 @@ def _customer_to_json(c):
 
 
 @app.route("/api/customers/search")
+@login_required
 def api_customers_search():
     q = request.args.get("q", "")
     if len(q) < 1:
@@ -474,6 +661,7 @@ def api_customers_search():
 
 
 @app.route("/api/customers", methods=["POST"])
+@login_required
 def api_customers_create():
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
@@ -491,7 +679,10 @@ def api_customers_create():
     return jsonify({"customer": _customer_to_json(c)})
 
 
+# ── Credit Ledger ─────────────────────────────────────────────────────
+
 @app.route("/credit-ledger")
+@login_required
 def credit_ledger():
     balances = excel_db.get_all_credit_balances()
     total_outstanding = round(sum(b["balance"] for b in balances if b["balance"] > 0), 2)
@@ -501,6 +692,7 @@ def credit_ledger():
 
 
 @app.route("/credit-ledger/<int:customer_id>/pay", methods=["POST"])
+@login_required
 def record_credit_payment(customer_id):
     amount_str = request.form.get("amount", "").strip()
     note = request.form.get("note", "").strip()
@@ -518,6 +710,7 @@ def record_credit_payment(customer_id):
 
 
 @app.route("/credit-ledger/<int:customer_id>/charge", methods=["POST"])
+@login_required
 def record_credit_charge(customer_id):
     amount_str = request.form.get("amount", "").strip()
     note = request.form.get("note", "").strip()
@@ -534,7 +727,10 @@ def record_credit_charge(customer_id):
     return redirect(request.referrer or url_for("credit_ledger"))
 
 
+# ── Product Import ────────────────────────────────────────────────────
+
 @app.route("/products/import", methods=["GET", "POST"])
+@login_required
 def product_import():
     if request.method == "POST":
         if "file" not in request.files:
@@ -547,7 +743,7 @@ def product_import():
         if not f.filename.endswith((".xlsx", ".xls")):
             flash("Please upload an Excel file (.xlsx).", "danger")
             return redirect(url_for("product_import"))
-        import tempfile, os
+        import tempfile, os as _os
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         f.save(tmp.name)
         tmp.close()
@@ -559,7 +755,7 @@ def product_import():
         except Exception as e:
             flash(f"Import failed: {e}", "danger")
         finally:
-            os.unlink(tmp.name)
+            _os.unlink(tmp.name)
         return redirect(url_for("products"))
     return render_template("product_import.html")
 

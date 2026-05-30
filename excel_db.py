@@ -49,6 +49,9 @@ ITEM_HEADERS = [
 CREDIT_LEDGER_HEADERS = [
     "entry_id", "customer_id", "invoice_id", "type", "amount", "note", "created_at",
 ]
+USER_HEADERS = [
+    "user_id", "username", "password_hash", "role", "is_active", "created_at",
+]
 
 
 def _is_valid_xlsx():
@@ -78,6 +81,8 @@ def init_workbook():
         ws4.append(CUSTOMER_HEADERS)
         ws5 = wb.create_sheet("CreditLedger")
         ws5.append(CREDIT_LEDGER_HEADERS)
+        ws6 = wb.create_sheet("Users")
+        ws6.append(USER_HEADERS)
         _save(wb)
         wb.close()
     ensure_workbook_schema()
@@ -103,6 +108,10 @@ def ensure_workbook_schema():
         if "CreditLedger" not in wb.sheetnames:
             ws_cl = wb.create_sheet("CreditLedger")
             ws_cl.append(CREDIT_LEDGER_HEADERS)
+            changed = True
+        if "Users" not in wb.sheetnames:
+            ws_u = wb.create_sheet("Users")
+            ws_u.append(USER_HEADERS)
             changed = True
         if changed:
             _save(wb)
@@ -1058,3 +1067,106 @@ def import_from_excel(filepath):
 
     wb_src.close()
     return imported, skipped, errors
+
+
+# ── Users ─────────────────────────────────────────────────────────────
+
+def get_all_users():
+    with _lock:
+        wb = _open()
+        ws = wb["Users"]
+        users = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            u = _row_to_dict(USER_HEADERS, row)
+            u["user_id"] = int(u["user_id"])
+            u["is_active"] = bool(u["is_active"])
+            users.append(u)
+        wb.close()
+    return users
+
+
+def get_user_by_id(user_id):
+    for u in get_all_users():
+        if u["user_id"] == int(user_id):
+            return u
+    return None
+
+
+def get_user_by_username(username):
+    username = (username or "").strip().lower()
+    for u in get_all_users():
+        if str(u["username"]).lower() == username:
+            return u
+    return None
+
+
+def has_any_users():
+    with _lock:
+        wb = _open()
+        ws = wb["Users"]
+        for row in ws.iter_rows(min_row=2, max_row=2, values_only=True):
+            wb.close()
+            return row[0] is not None
+        wb.close()
+    return False
+
+
+def add_user(username, password_hash, role="staff"):
+    with _lock:
+        wb = _open()
+        ws = wb["Users"]
+        uid = _next_id(ws)
+        ws.append([uid, username.strip().lower(), password_hash, role, 1, datetime.now()])
+        _save(wb)
+        wb.close()
+    return uid
+
+
+def update_user_password(user_id, password_hash):
+    with _lock:
+        wb = _open()
+        ws = wb["Users"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == int(user_id):
+                row[2].value = password_hash
+                break
+        _save(wb)
+        wb.close()
+
+
+def set_user_role(user_id, role):
+    with _lock:
+        wb = _open()
+        ws = wb["Users"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == int(user_id):
+                row[3].value = role
+                break
+        _save(wb)
+        wb.close()
+
+
+def toggle_user_active(user_id):
+    with _lock:
+        wb = _open()
+        ws = wb["Users"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == int(user_id):
+                row[4].value = 0 if row[4].value else 1
+                break
+        _save(wb)
+        wb.close()
+
+
+def delete_user(user_id):
+    with _lock:
+        wb = _open()
+        ws = wb["Users"]
+        for idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+            if row[0].value is not None and int(row[0].value) == int(user_id):
+                ws.delete_rows(idx)
+                break
+        _save(wb)
+        wb.close()

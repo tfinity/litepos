@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-people"></i> Users</h2>
+    <button class="btn btn-dark" data-bs-toggle="modal" data-bs-target="#addUserModal">
+        <i class="bi bi-person-plus"></i> Add User
+    </button>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in users %}
+                <tr class="{{ 'text-muted' if not u.is_active }}">
+                    <td>
+                        <i class="bi bi-person-circle me-1"></i>
+                        {{ u.username }}
+                        {% if u.user_id | string == current_user.id %}
+                            <span class="badge bg-secondary ms-1">You</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="badge {{ 'bg-danger' if u.role == 'admin' else 'bg-primary' }}">
+                            {{ u.role }}
+                        </span>
+                    </td>
+                    <td>
+                        {% if u.is_active %}
+                            <span class="badge bg-success">Active</span>
+                        {% else %}
+                            <span class="badge bg-secondary">Inactive</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted" style="font-size:0.85rem">
+                        {{ u.created_at.strftime('%Y-%m-%d') if u.created_at else '—' }}
+                    </td>
+                    <td>
+                        {% if u.user_id | string != current_user.id %}
+                        <div class="d-flex gap-1 flex-wrap">
+                            <!-- Change password -->
+                            <button class="btn btn-sm btn-outline-secondary"
+                                    data-bs-toggle="modal"
+                                    data-bs-target="#pwdModal"
+                                    data-user-id="{{ u.user_id }}"
+                                    data-username="{{ u.username }}">
+                                <i class="bi bi-key"></i>
+                            </button>
+                            <!-- Change role -->
+                            <form method="POST" action="{{ url_for('user_change_role', user_id=u.user_id) }}" class="d-inline">
+                                <input type="hidden" name="role" value="{{ 'staff' if u.role == 'admin' else 'admin' }}">
+                                <button class="btn btn-sm btn-outline-warning" title="Toggle role">
+                                    <i class="bi bi-arrow-repeat"></i>
+                                    {{ 'Make Staff' if u.role == 'admin' else 'Make Admin' }}
+                                </button>
+                            </form>
+                            <!-- Toggle active -->
+                            <form method="POST" action="{{ url_for('user_toggle', user_id=u.user_id) }}" class="d-inline">
+                                <button class="btn btn-sm {{ 'btn-outline-danger' if u.is_active else 'btn-outline-success' }}"
+                                        title="{{ 'Deactivate' if u.is_active else 'Activate' }}">
+                                    <i class="bi {{ 'bi-person-dash' if u.is_active else 'bi-person-check' }}"></i>
+                                </button>
+                            </form>
+                            <!-- Delete -->
+                            <form method="POST" action="{{ url_for('user_delete', user_id=u.user_id) }}" class="d-inline"
+                                  onsubmit="return confirm('Delete user {{ u.username }}?')">
+                                <button class="btn btn-sm btn-outline-danger">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </div>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Add User Modal -->
+<div class="modal fade" id="addUserModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('user_add') }}">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add User</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input type="text" name="username" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Password <small class="text-muted">(min 6 chars)</small></label>
+                        <input type="password" name="password" class="form-control" required minlength="6">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Role</label>
+                        <select name="role" class="form-select">
+                            <option value="staff">Staff</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-dark"><i class="bi bi-person-plus"></i> Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Change Password Modal -->
+<div class="modal fade" id="pwdModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" id="pwdForm" action="">
+                <div class="modal-header">
+                    <h5 class="modal-title">Change Password — <span id="pwdUsername"></span></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">New Password <small class="text-muted">(min 6 chars)</small></label>
+                        <input type="password" name="password" class="form-control" required minlength="6">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-dark"><i class="bi bi-check-circle"></i> Update</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('pwdModal').addEventListener('show.bs.modal', function(e) {
+    const btn = e.relatedTarget;
+    document.getElementById('pwdUsername').textContent = btn.getAttribute('data-username');
+    document.getElementById('pwdForm').action = '/users/' + btn.getAttribute('data-user-id') + '/password';
+});
+</script>
+{% endblock %}
