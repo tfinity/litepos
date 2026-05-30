@@ -11,7 +11,7 @@ from flask import (
     flash, jsonify,
 )
 
-import excel_db
+import db as excel_db
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
