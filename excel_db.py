@@ -7,7 +7,27 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 DATA_FILE = Path(__file__).parent / "data.xlsx"
+_TMP_FILE = Path(__file__).parent / "data.tmp.xlsx"
+_BACKUP_DIR = Path(__file__).parent / "backups"
+_MAX_BACKUPS = 7
 _lock = threading.Lock()
+
+
+def _save(wb):
+    """Atomic save with rolling backup. Backs up current file before overwriting."""
+    # Backup existing file before replacing it
+    if DATA_FILE.exists():
+        _BACKUP_DIR.mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        backup_path = _BACKUP_DIR / f"data_{ts}.xlsx"
+        import shutil
+        shutil.copy2(DATA_FILE, backup_path)
+        # Prune old backups, keep only the most recent _MAX_BACKUPS
+        backups = sorted(_BACKUP_DIR.glob("data_*.xlsx"))
+        for old in backups[:-_MAX_BACKUPS]:
+            old.unlink(missing_ok=True)
+    wb.save(_TMP_FILE)
+    _TMP_FILE.replace(DATA_FILE)
 
 PRODUCT_HEADERS = [
     "product_id", "name", "purchase_price", "counter_price", "retail_price",
@@ -31,8 +51,20 @@ CREDIT_LEDGER_HEADERS = [
 ]
 
 
+def _is_valid_xlsx():
+    from zipfile import BadZipFile
+    try:
+        wb = load_workbook(DATA_FILE)
+        wb.close()
+        return True
+    except (BadZipFile, Exception):
+        return False
+
+
 def init_workbook():
     """Create data.xlsx with header rows if it doesn't exist; migrate existing files."""
+    if DATA_FILE.exists() and not _is_valid_xlsx():
+        DATA_FILE.unlink()
     if not DATA_FILE.exists():
         wb = Workbook()
         ws = wb.active
@@ -46,7 +78,7 @@ def init_workbook():
         ws4.append(CUSTOMER_HEADERS)
         ws5 = wb.create_sheet("CreditLedger")
         ws5.append(CREDIT_LEDGER_HEADERS)
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
     ensure_workbook_schema()
 
@@ -73,7 +105,7 @@ def ensure_workbook_schema():
             ws_cl.append(CREDIT_LEDGER_HEADERS)
             changed = True
         if changed:
-            wb.save(DATA_FILE)
+            _save(wb)
         wb.close()
 
 
@@ -173,7 +205,7 @@ def add_product(data):
             data.get("category", ""),
             datetime.now(),
         ])
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
     return pid
 
@@ -198,7 +230,7 @@ def update_product(product_id, data):
                 row[7].value = expiry
                 row[8].value = data.get("category", "")
                 break
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
 
 
@@ -210,7 +242,7 @@ def delete_product(product_id):
             if row[0].value is not None and int(row[0].value) == int(product_id):
                 ws.delete_rows(idx)
                 break
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
 
 
@@ -283,7 +315,7 @@ def add_customer(data):
             (data.get("notes") or "").strip(),
             datetime.now(),
         ])
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
     return cid
 
@@ -310,7 +342,7 @@ def update_customer(customer_id, data):
             row[5].value = (data.get("tax_id") or "").strip()
             row[6].value = (data.get("notes") or "").strip()
             break
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
 
 
@@ -339,7 +371,7 @@ def delete_customer(customer_id):
                 continue
             ws.delete_rows(idx)
             break
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
     return True
 
@@ -614,7 +646,7 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
             cl_entry_id = _next_id(ws_cl)
             ws_cl.append([cl_entry_id, cid, invoice_id, "debit", total, "Credit sale", datetime.now()])
 
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
 
     return invoice_id
@@ -785,7 +817,7 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
             cl_entry_id = _next_id(ws_cl)
             ws_cl.append([cl_entry_id, new_cid, invoice_id, "debit", total, "Credit sale", datetime.now()])
 
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
 
     return invoice_id
@@ -831,7 +863,7 @@ def add_ledger_payment(customer_id, amount, note=""):
         ws_cl = wb["CreditLedger"]
         entry_id = _next_id(ws_cl)
         ws_cl.append([entry_id, cid, None, "credit", amount, (note or "").strip(), datetime.now()])
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
     return entry_id
 
@@ -854,7 +886,7 @@ def add_ledger_debit(customer_id, amount, note=""):
         ws_cl = wb["CreditLedger"]
         entry_id = _next_id(ws_cl)
         ws_cl.append([entry_id, cid, None, "debit", amount, (note or "").strip(), datetime.now()])
-        wb.save(DATA_FILE)
+        _save(wb)
         wb.close()
     return entry_id
 
