@@ -27,6 +27,9 @@ def _save(wb):
         for old in backups[:-_MAX_BACKUPS]:
             old.unlink(missing_ok=True)
     wb.save(_TMP_FILE)
+    # Windows doesn't allow replace() over an existing file — remove first
+    if DATA_FILE.exists():
+        DATA_FILE.unlink()
     _TMP_FILE.replace(DATA_FILE)
 
 PRODUCT_HEADERS = [
