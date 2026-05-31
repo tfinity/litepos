@@ -387,6 +387,33 @@ def invoice_detail(invoice_id):
                            invoice=invoice, items=items)
 
 
+@app.route("/invoices/<int:invoice_id>/delete", methods=["POST"])
+@login_required
+def invoice_delete(invoice_id):
+    password = request.form.get("password", "").strip()
+    reason = request.form.get("reason", "").strip()
+    u = excel_db.get_user_by_username(current_user.username)
+    if not u or not check_password_hash(u["password_hash"], password):
+        flash("Incorrect password. Receipt not deleted.", "danger")
+        return redirect(url_for("invoice_detail", invoice_id=invoice_id))
+    try:
+        excel_db.delete_invoice(invoice_id, current_user.username, reason)
+        flash(f"Receipt #{invoice_id} deleted and stock reversed.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("invoices"))
+
+
+@app.route("/invoices/deleted")
+@login_required
+def deleted_invoices():
+    invoices = excel_db.get_deleted_invoices()
+    cmap = excel_db.customer_lookup()
+    for inv in invoices:
+        _attach_customer(inv, cmap)
+    return render_template("deleted_invoices.html", invoices=invoices)
+
+
 @app.route("/quotation/preview", methods=["POST"])
 @login_required
 def quotation_preview():
@@ -758,6 +785,202 @@ def product_import():
             _os.unlink(tmp.name)
         return redirect(url_for("products"))
     return render_template("product_import.html")
+
+
+# ── Suppliers ────────────────────────────────────────────────────────
+
+@app.route("/suppliers")
+@login_required
+def suppliers_list():
+    all_suppliers = excel_db.get_all_suppliers()
+    balance_map = {b["supplier_id"]: b for b in excel_db.get_all_supplier_balances()}
+    balances = []
+    for s in all_suppliers:
+        sid = s["supplier_id"]
+        b = balance_map.get(sid, {"total_debt": 0.0, "total_paid": 0.0, "balance": 0.0})
+        balances.append({
+            "supplier_id": sid,
+            "supplier": s,
+            "total_debt": b["total_debt"],
+            "total_paid": b["total_paid"],
+            "balance": b["balance"],
+        })
+    balances.sort(key=lambda x: x["balance"], reverse=True)
+    total_owed = round(sum(b["balance"] for b in balances if b["balance"] > 0), 2)
+    return render_template("suppliers.html", balances=balances, total_owed=total_owed)
+
+
+@app.route("/suppliers/add", methods=["GET", "POST"])
+@login_required
+def supplier_add():
+    if request.method == "POST":
+        data = {k: request.form.get(k, "") for k in ("name", "phone", "email", "address", "notes")}
+        if not data["name"].strip():
+            flash("Name is required.", "danger")
+            return render_template("supplier_form.html", supplier=None, data=data)
+        excel_db.add_supplier(data)
+        flash("Supplier added.", "success")
+        return redirect(url_for("suppliers_list"))
+    return render_template("supplier_form.html", supplier=None, data=None)
+
+
+@app.route("/suppliers/<int:supplier_id>/edit", methods=["GET", "POST"])
+@login_required
+def supplier_edit(supplier_id):
+    supplier = excel_db.get_supplier(supplier_id)
+    if not supplier:
+        flash("Supplier not found.", "danger")
+        return redirect(url_for("suppliers_list"))
+    if request.method == "POST":
+        data = {k: request.form.get(k, "") for k in ("name", "phone", "email", "address", "notes")}
+        if not data["name"].strip():
+            flash("Name is required.", "danger")
+            return render_template("supplier_form.html", supplier=supplier, data=data)
+        excel_db.update_supplier(supplier_id, data)
+        flash("Supplier updated.", "success")
+        return redirect(url_for("supplier_detail", supplier_id=supplier_id))
+    return render_template("supplier_form.html", supplier=supplier, data=None)
+
+
+@app.route("/suppliers/<int:supplier_id>/delete", methods=["POST"])
+@login_required
+@admin_required
+def supplier_delete(supplier_id):
+    try:
+        excel_db.delete_supplier(supplier_id)
+        flash("Supplier deleted.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("suppliers_list"))
+
+
+@app.route("/suppliers/<int:supplier_id>")
+@login_required
+def supplier_detail(supplier_id):
+    supplier = excel_db.get_supplier(supplier_id)
+    if not supplier:
+        flash("Supplier not found.", "danger")
+        return redirect(url_for("suppliers_list"))
+    entries = excel_db.get_supplier_ledger_entries(supplier_id)
+    total_debt, total_paid, balance = excel_db.get_supplier_balance(supplier_id)
+    # Running balance per entry
+    running = 0.0
+    for e in entries:
+        amt = float(e["amount"] or 0)
+        if e["type"] == "debit":
+            running += amt
+        else:
+            running -= amt
+        e["running_balance"] = round(running, 2)
+    return render_template("supplier_detail.html",
+                           supplier=supplier,
+                           entries=entries,
+                           total_debt=total_debt,
+                           total_paid=total_paid,
+                           balance=balance)
+
+
+@app.route("/suppliers/<int:supplier_id>/pay", methods=["POST"])
+@login_required
+def supplier_pay(supplier_id):
+    amount_str = request.form.get("amount", "").strip()
+    note = request.form.get("note", "").strip()
+    try:
+        amount = float(amount_str)
+    except (ValueError, TypeError):
+        flash("Invalid amount.", "danger")
+        return redirect(url_for("supplier_detail", supplier_id=supplier_id))
+    try:
+        excel_db.add_supplier_payment(supplier_id, amount, note)
+        flash(f"Payment of {CURRENCY} {amount:.2f} recorded.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("supplier_detail", supplier_id=supplier_id))
+
+
+# ── Purchase Invoices ─────────────────────────────────────────────────
+
+@app.route("/purchases")
+@login_required
+def purchases_list():
+    purchases = excel_db.get_all_purchase_invoices()
+    smap = excel_db.supplier_lookup()
+    for p in purchases:
+        p["supplier"] = smap.get(int(p["supplier_id"])) if p.get("supplier_id") else None
+    return render_template("purchases.html", purchases=purchases)
+
+
+@app.route("/purchases/create", methods=["GET", "POST"])
+@login_required
+def purchase_create():
+    if request.method == "POST":
+        data = request.get_json()
+        supplier_id = data.get("supplier_id")
+        items = data.get("items", [])
+        notes = data.get("notes", "")
+        if not supplier_id:
+            return jsonify({"error": "Supplier is required"}), 400
+        if not items:
+            return jsonify({"error": "No items added"}), 400
+        try:
+            purchase_id = excel_db.create_purchase_invoice(supplier_id, items, notes)
+            return jsonify({"purchase_id": purchase_id})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    suppliers = excel_db.get_all_suppliers()
+    products = excel_db.get_all_products()
+    return render_template("purchase_create.html", suppliers=suppliers, products=products)
+
+
+@app.route("/purchases/<int:purchase_id>")
+@login_required
+def purchase_detail(purchase_id):
+    purchase = excel_db.get_purchase_invoice(purchase_id)
+    if not purchase:
+        flash("Purchase invoice not found.", "danger")
+        return redirect(url_for("purchases_list"))
+    supplier = excel_db.get_supplier(int(purchase["supplier_id"])) if purchase.get("supplier_id") else None
+    items = excel_db.get_purchase_invoice_items(purchase_id)
+    return render_template("purchase_detail.html", purchase=purchase, supplier=supplier, items=items)
+
+
+# ── P&L Report ────────────────────────────────────────────────────────
+
+@app.route("/pl-report")
+@login_required
+def pl_report():
+    from datetime import datetime as _dt
+    today = date.today()
+    start_str = request.args.get("start", today.replace(day=1).isoformat())
+    end_str = request.args.get("end", today.isoformat())
+    supplier_id = request.args.get("supplier_id", "")
+    try:
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = today.replace(day=1)
+        end_date = today
+
+    suppliers = excel_db.get_all_suppliers()
+
+    if supplier_id:
+        supplier = excel_db.get_supplier(int(supplier_id))
+        rows, totals = excel_db.get_supplier_sales_pl(int(supplier_id), start_date, end_date)
+        report_type = "supplier"
+    else:
+        supplier = None
+        rows, totals = excel_db.get_sales_pl_report(start_date, end_date)
+        report_type = "overall"
+
+    return render_template("pl_report.html",
+                           rows=rows,
+                           totals=totals,
+                           suppliers=suppliers,
+                           supplier=supplier,
+                           supplier_id=supplier_id,
+                           start_date=start_date,
+                           end_date=end_date,
+                           report_type=report_type)
 
 
 if __name__ == "__main__":

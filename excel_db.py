@@ -34,7 +34,7 @@ def _save(wb):
 
 PRODUCT_HEADERS = [
     "product_id", "name", "purchase_price", "counter_price", "retail_price",
-    "quantity", "barcode", "expiry_date", "category", "created_at",
+    "quantity", "barcode", "expiry_date", "category", "created_at", "last_supplier_id",
 ]
 CUSTOMER_HEADERS = [
     "customer_id", "name", "phone", "email", "address", "tax_id", "notes", "created_at",
@@ -43,6 +43,7 @@ INVOICE_HEADERS = [
     "invoice_id", "created_at", "subtotal", "discount_total",
     "tax_rate", "tax_amount", "total", "payment_method",
     "customer_id",  # last: backward compatible with older workbooks (short rows)
+    "status", "deleted_at", "deleted_by", "delete_reason",
 ]
 ITEM_HEADERS = [
     "item_id", "invoice_id", "product_id", "product_name",
@@ -54,6 +55,18 @@ CREDIT_LEDGER_HEADERS = [
 ]
 USER_HEADERS = [
     "user_id", "username", "password_hash", "role", "is_active", "created_at",
+]
+SUPPLIER_HEADERS = [
+    "supplier_id", "name", "phone", "email", "address", "notes", "created_at",
+]
+PURCHASE_HEADERS = [
+    "purchase_id", "supplier_id", "created_at", "total_amount", "notes",
+]
+PURCHASE_ITEM_HEADERS = [
+    "item_id", "purchase_id", "product_id", "product_name", "quantity", "unit_cost", "line_total",
+]
+SUPPLIER_LEDGER_HEADERS = [
+    "entry_id", "supplier_id", "purchase_id", "type", "amount", "note", "created_at",
 ]
 
 
@@ -86,6 +99,14 @@ def init_workbook():
         ws5.append(CREDIT_LEDGER_HEADERS)
         ws6 = wb.create_sheet("Users")
         ws6.append(USER_HEADERS)
+        ws7 = wb.create_sheet("Suppliers")
+        ws7.append(SUPPLIER_HEADERS)
+        ws8 = wb.create_sheet("Purchases")
+        ws8.append(PURCHASE_HEADERS)
+        ws9 = wb.create_sheet("PurchaseItems")
+        ws9.append(PURCHASE_ITEM_HEADERS)
+        ws10 = wb.create_sheet("SupplierLedger")
+        ws10.append(SUPPLIER_LEDGER_HEADERS)
         _save(wb)
         wb.close()
     ensure_workbook_schema()
@@ -116,6 +137,31 @@ def ensure_workbook_schema():
             ws_u = wb.create_sheet("Users")
             ws_u.append(USER_HEADERS)
             changed = True
+        if "Suppliers" not in wb.sheetnames:
+            wb.create_sheet("Suppliers").append(SUPPLIER_HEADERS)
+            changed = True
+        if "Purchases" not in wb.sheetnames:
+            wb.create_sheet("Purchases").append(PURCHASE_HEADERS)
+            changed = True
+        if "PurchaseItems" not in wb.sheetnames:
+            wb.create_sheet("PurchaseItems").append(PURCHASE_ITEM_HEADERS)
+            changed = True
+        if "SupplierLedger" not in wb.sheetnames:
+            wb.create_sheet("SupplierLedger").append(SUPPLIER_LEDGER_HEADERS)
+            changed = True
+        # Add last_supplier_id column to Products if missing
+        ws_prod = wb["Products"]
+        if ws_prod.cell(row=1, column=11).value != "last_supplier_id":
+            ws_prod.cell(row=1, column=11).value = "last_supplier_id"
+            changed = True
+        # Add soft-delete columns to Invoices if missing
+        ws_inv2 = wb["Invoices"]
+        inv_headers = [ws_inv2.cell(row=1, column=c).value for c in range(1, ws_inv2.max_column + 1)]
+        for col_name in ("status", "deleted_at", "deleted_by", "delete_reason"):
+            if col_name not in inv_headers:
+                ws_inv2.cell(row=1, column=ws_inv2.max_column + 1).value = col_name
+                changed = True
+                inv_headers.append(col_name)
         if changed:
             _save(wb)
         wb.close()
@@ -502,7 +548,7 @@ def _customer_exists_in_workbook(wb, customer_id):
 
 # ── Invoices ──────────────────────────────────────────────────────────
 
-def get_all_invoices():
+def get_all_invoices(include_deleted=False):
     with _lock:
         wb = _open()
         ws = wb["Invoices"]
@@ -510,17 +556,118 @@ def get_all_invoices():
         for row in ws.iter_rows(min_row=2, values_only=True):
             if row[0] is None:
                 continue
-            invoices.append(_row_to_dict(INVOICE_HEADERS, row))
+            inv = _row_to_dict(INVOICE_HEADERS, row)
+            if not include_deleted and inv.get("status") == "deleted":
+                continue
+            invoices.append(inv)
+        wb.close()
+    invoices.sort(key=lambda x: x["invoice_id"], reverse=True)
+    return invoices
+
+
+def get_deleted_invoices():
+    with _lock:
+        wb = _open()
+        ws = wb["Invoices"]
+        invoices = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            inv = _row_to_dict(INVOICE_HEADERS, row)
+            if inv.get("status") == "deleted":
+                invoices.append(inv)
         wb.close()
     invoices.sort(key=lambda x: x["invoice_id"], reverse=True)
     return invoices
 
 
 def get_invoice(invoice_id):
-    for inv in get_all_invoices():
-        if int(inv["invoice_id"]) == int(invoice_id):
-            return inv
+    with _lock:
+        wb = _open()
+        ws = wb["Invoices"]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            inv = _row_to_dict(INVOICE_HEADERS, row)
+            if int(inv["invoice_id"]) == int(invoice_id):
+                wb.close()
+                return inv
+        wb.close()
     return None
+
+
+def delete_invoice(invoice_id, deleted_by, reason=""):
+    """Soft-delete an invoice: mark deleted, reverse stock, reverse credit ledger."""
+    iid = int(invoice_id)
+    with _lock:
+        wb = _open()
+        ws_inv = wb["Invoices"]
+        ws_items = wb["InvoiceItems"]
+        ws_prod = wb["Products"]
+        ws_cl = wb["CreditLedger"] if "CreditLedger" in wb.sheetnames else None
+
+        # Find and mark invoice row
+        inv_row_ref = None
+        for row in ws_inv.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == iid:
+                inv_row_ref = row
+                break
+        if inv_row_ref is None:
+            wb.close()
+            raise ValueError("Invoice not found")
+
+        inv = _row_to_dict(INVOICE_HEADERS, [c.value for c in inv_row_ref])
+        if inv.get("status") == "deleted":
+            wb.close()
+            raise ValueError("Invoice already deleted")
+
+        # Build product row lookup
+        product_rows = {}
+        for row in ws_prod.iter_rows(min_row=2):
+            if row[0].value is not None:
+                product_rows[int(row[0].value)] = row
+
+        # Reverse stock for each item
+        for row in ws_items.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(ITEM_HEADERS, row)
+            if int(item["invoice_id"]) != iid:
+                continue
+            pid = int(item["product_id"] or 0)
+            qty = int(item["quantity"] or 0)
+            if pid in product_rows:
+                prow = product_rows[pid]
+                current_stock = int(prow[4].value or 0)
+                prow[4].value = current_stock + qty
+
+        # Reverse credit ledger entries for this invoice
+        if ws_cl is not None:
+            for row in ws_cl.iter_rows(min_row=2):
+                if row[0].value is None:
+                    continue
+                if str(row[2].value) == str(iid):  # invoice_id column (index 2)
+                    row[3].value = "deleted"  # mark entry type as deleted
+
+        # Write soft-delete fields onto invoice row
+        headers = [ws_inv.cell(row=1, column=c).value for c in range(1, ws_inv.max_column + 1)]
+        col_status = headers.index("status") + 1 if "status" in headers else None
+        col_dat = headers.index("deleted_at") + 1 if "deleted_at" in headers else None
+        col_by = headers.index("deleted_by") + 1 if "deleted_by" in headers else None
+        col_reason = headers.index("delete_reason") + 1 if "delete_reason" in headers else None
+
+        inv_row_num = inv_row_ref[0].row
+        if col_status:
+            ws_inv.cell(row=inv_row_num, column=col_status).value = "deleted"
+        if col_dat:
+            ws_inv.cell(row=inv_row_num, column=col_dat).value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if col_by:
+            ws_inv.cell(row=inv_row_num, column=col_by).value = deleted_by
+        if col_reason:
+            ws_inv.cell(row=inv_row_num, column=col_reason).value = reason
+
+        _save(wb)
+        wb.close()
 
 
 def get_invoice_items(invoice_id):
@@ -1173,3 +1320,422 @@ def delete_user(user_id):
                 break
         _save(wb)
         wb.close()
+
+
+# ── Suppliers ─────────────────────────────────────────────────────────
+
+def get_all_suppliers():
+    with _lock:
+        wb = _open()
+        ws = wb["Suppliers"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            s = _row_to_dict(SUPPLIER_HEADERS, row)
+            s["supplier_id"] = int(s["supplier_id"])
+            rows.append(s)
+        wb.close()
+    rows.sort(key=lambda x: x["supplier_id"])
+    return rows
+
+
+def get_supplier(supplier_id):
+    sid = int(supplier_id)
+    for s in get_all_suppliers():
+        if s["supplier_id"] == sid:
+            return s
+    return None
+
+
+def add_supplier(data):
+    with _lock:
+        wb = _open()
+        ws = wb["Suppliers"]
+        sid = _next_id(ws)
+        ws.append([
+            sid,
+            (data.get("name") or "").strip(),
+            (data.get("phone") or "").strip(),
+            (data.get("email") or "").strip(),
+            (data.get("address") or "").strip(),
+            (data.get("notes") or "").strip(),
+            datetime.now(),
+        ])
+        _save(wb)
+        wb.close()
+    return sid
+
+
+def update_supplier(supplier_id, data):
+    sid = int(supplier_id)
+    with _lock:
+        wb = _open()
+        ws = wb["Suppliers"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == sid:
+                row[1].value = (data.get("name") or "").strip()
+                row[2].value = (data.get("phone") or "").strip()
+                row[3].value = (data.get("email") or "").strip()
+                row[4].value = (data.get("address") or "").strip()
+                row[5].value = (data.get("notes") or "").strip()
+                break
+        _save(wb)
+        wb.close()
+
+
+def delete_supplier(supplier_id):
+    sid = int(supplier_id)
+    with _lock:
+        wb = _open()
+        ws_p = wb["Purchases"]
+        for row in ws_p.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            if row[1] is not None and int(row[1]) == sid:
+                wb.close()
+                raise ValueError("Cannot delete supplier: purchase invoices reference this supplier.")
+        ws = wb["Suppliers"]
+        for idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+            if row[0].value is not None and int(row[0].value) == sid:
+                ws.delete_rows(idx)
+                break
+        _save(wb)
+        wb.close()
+    return True
+
+
+def supplier_lookup():
+    return {s["supplier_id"]: s for s in get_all_suppliers()}
+
+
+# ── Purchase Invoices ─────────────────────────────────────────────────
+
+def create_purchase_invoice(supplier_id, items, notes=""):
+    """
+    Receive stock from a supplier.
+    items: list of {product_id, quantity, unit_cost}
+    - Increases product stock
+    - Updates product purchase_price and last_supplier_id
+    - Creates purchase invoice + items
+    - Adds debit to supplier ledger
+    """
+    sid = int(supplier_id)
+    with _lock:
+        wb = _open()
+        ws_prod = wb["Products"]
+        ws_purch = wb["Purchases"]
+        ws_pitems = wb["PurchaseItems"]
+
+        if "SupplierLedger" not in wb.sheetnames:
+            wb.create_sheet("SupplierLedger").append(SUPPLIER_LEDGER_HEADERS)
+
+        ws_sl = wb["SupplierLedger"]
+
+        # Build product row lookup
+        product_rows = {}
+        for row in ws_prod.iter_rows(min_row=2):
+            if row[0].value is not None:
+                product_rows[int(row[0].value)] = row
+
+        purchase_id = _next_id(ws_purch)
+        item_id_start = _next_id(ws_pitems)
+        total_amount = 0.0
+        line_entries = []
+
+        for i, item in enumerate(items):
+            pid = int(item["product_id"])
+            qty = int(item["quantity"])
+            unit_cost = float(item["unit_cost"])
+            if pid not in product_rows:
+                wb.close()
+                raise ValueError(f"Product ID {pid} not found")
+            prow = product_rows[pid]
+            line_total = round(unit_cost * qty, 2)
+            total_amount += line_total
+            line_entries.append([
+                item_id_start + i, purchase_id, pid,
+                prow[1].value, qty, unit_cost, line_total,
+            ])
+            # Update stock
+            prow[5].value = int(prow[5].value or 0) + qty
+            # Update purchase price and last_supplier_id on product
+            prow[2].value = unit_cost
+            prow[10].value = sid
+
+        total_amount = round(total_amount, 2)
+        ws_purch.append([purchase_id, sid, datetime.now(), total_amount, (notes or "").strip()])
+        for entry in line_entries:
+            ws_pitems.append(entry)
+
+        # Supplier ledger debit
+        sl_id = _next_id(ws_sl)
+        ws_sl.append([sl_id, sid, purchase_id, "debit", total_amount,
+                      f"Purchase invoice #{purchase_id}", datetime.now()])
+
+        _save(wb)
+        wb.close()
+    return purchase_id
+
+
+def get_all_purchase_invoices():
+    with _lock:
+        wb = _open()
+        ws = wb["Purchases"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            rows.append(_row_to_dict(PURCHASE_HEADERS, row))
+        wb.close()
+    rows.sort(key=lambda x: x["purchase_id"], reverse=True)
+    return rows
+
+
+def get_purchase_invoice(purchase_id):
+    pid = int(purchase_id)
+    for p in get_all_purchase_invoices():
+        if int(p["purchase_id"]) == pid:
+            return p
+    return None
+
+
+def get_purchase_invoice_items(purchase_id):
+    pid = int(purchase_id)
+    with _lock:
+        wb = _open()
+        ws = wb["PurchaseItems"]
+        items = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(PURCHASE_ITEM_HEADERS, row)
+            if int(item["purchase_id"]) == pid:
+                items.append(item)
+        wb.close()
+    return items
+
+
+# ── Supplier Ledger ───────────────────────────────────────────────────
+
+def add_supplier_payment(supplier_id, amount, note=""):
+    sid = int(supplier_id)
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    if not get_supplier(sid):
+        raise ValueError("Supplier not found.")
+    with _lock:
+        wb = _open()
+        if "SupplierLedger" not in wb.sheetnames:
+            wb.create_sheet("SupplierLedger").append(SUPPLIER_LEDGER_HEADERS)
+        ws_sl = wb["SupplierLedger"]
+        entry_id = _next_id(ws_sl)
+        ws_sl.append([entry_id, sid, None, "credit", amount,
+                      (note or "").strip(), datetime.now()])
+        _save(wb)
+        wb.close()
+    return entry_id
+
+
+def get_supplier_ledger_entries(supplier_id=None):
+    sid = int(supplier_id) if supplier_id is not None else None
+    with _lock:
+        wb = _open()
+        if "SupplierLedger" not in wb.sheetnames:
+            wb.close()
+            return []
+        ws = wb["SupplierLedger"]
+        entries = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            e = _row_to_dict(SUPPLIER_LEDGER_HEADERS, row)
+            if sid is not None:
+                if e.get("supplier_id") is None or int(e["supplier_id"]) != sid:
+                    continue
+            entries.append(e)
+        wb.close()
+    entries.sort(key=lambda x: x["entry_id"])
+    return entries
+
+
+def get_supplier_balance(supplier_id):
+    entries = get_supplier_ledger_entries(supplier_id)
+    total_debt = sum(float(e["amount"] or 0) for e in entries if e["type"] == "debit")
+    total_paid = sum(float(e["amount"] or 0) for e in entries if e["type"] == "credit")
+    return round(total_debt, 2), round(total_paid, 2), round(total_debt - total_paid, 2)
+
+
+def get_all_supplier_balances():
+    smap = supplier_lookup()
+    entries = get_supplier_ledger_entries()
+    by_sid = {}
+    for e in entries:
+        sid = e.get("supplier_id")
+        if sid is None:
+            continue
+        sid = int(sid)
+        if sid not in by_sid:
+            by_sid[sid] = {"total_debt": 0.0, "total_paid": 0.0}
+        if e["type"] == "debit":
+            by_sid[sid]["total_debt"] += float(e["amount"] or 0)
+        else:
+            by_sid[sid]["total_paid"] += float(e["amount"] or 0)
+    result = []
+    for sid, b in by_sid.items():
+        balance = round(b["total_debt"] - b["total_paid"], 2)
+        result.append({
+            "supplier": smap.get(sid),
+            "supplier_id": sid,
+            "total_debt": round(b["total_debt"], 2),
+            "total_paid": round(b["total_paid"], 2),
+            "balance": balance,
+        })
+    result.sort(key=lambda x: x["balance"], reverse=True)
+    return result
+
+
+# ── P&L Reports ───────────────────────────────────────────────────────
+
+def get_sales_pl_report(start_date, end_date):
+    """
+    Returns per-item P&L for all sales in date range.
+    Each row: date, invoice_id, product_name, qty, purchase_price, sale_price, profit
+    Also returns aggregate totals.
+    """
+    start = start_date if isinstance(start_date, date) else datetime.strptime(str(start_date), "%Y-%m-%d").date()
+    end = end_date if isinstance(end_date, date) else datetime.strptime(str(end_date), "%Y-%m-%d").date()
+
+    # Collect invoice_ids in range + their dates
+    inv_dates = {}
+    for inv in get_all_invoices():
+        created = inv["created_at"]
+        if isinstance(created, datetime):
+            inv_date = created.date()
+        elif isinstance(created, date):
+            inv_date = created
+        else:
+            continue
+        if start <= inv_date <= end:
+            inv_dates[int(inv["invoice_id"])] = inv_date
+
+    if not inv_dates:
+        return [], {"revenue": 0, "cogs": 0, "profit": 0}
+
+    with _lock:
+        wb = _open()
+        ws = wb["InvoiceItems"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(ITEM_HEADERS, row)
+            iid = int(item["invoice_id"])
+            if iid not in inv_dates:
+                continue
+            qty = int(item["quantity"] or 0)
+            purchase_price = float(item["purchase_price"] or 0)
+            line_total = float(item["line_total"] or 0)
+            cogs = round(purchase_price * qty, 2)
+            profit = round(line_total - cogs, 2)
+            rows.append({
+                "date": inv_dates[iid],
+                "invoice_id": iid,
+                "product_name": item["product_name"],
+                "quantity": qty,
+                "purchase_price": purchase_price,
+                "sale_price": round(line_total / qty, 2) if qty else 0,
+                "line_total": line_total,
+                "cogs": cogs,
+                "profit": profit,
+            })
+        wb.close()
+
+    rows.sort(key=lambda x: (x["date"], x["invoice_id"]))
+    total_revenue = round(sum(r["line_total"] for r in rows), 2)
+    total_cogs = round(sum(r["cogs"] for r in rows), 2)
+    total_profit = round(total_revenue - total_cogs, 2)
+    return rows, {"revenue": total_revenue, "cogs": total_cogs, "profit": total_profit}
+
+
+def get_supplier_sales_pl(supplier_id, start_date, end_date):
+    """
+    Returns sales P&L for products last supplied by a given supplier.
+    Groups by product. Returns per-product rows + totals.
+    """
+    sid = int(supplier_id)
+    start = start_date if isinstance(start_date, date) else datetime.strptime(str(start_date), "%Y-%m-%d").date()
+    end = end_date if isinstance(end_date, date) else datetime.strptime(str(end_date), "%Y-%m-%d").date()
+
+    # Products supplied by this supplier
+    supplier_pids = set()
+    for p in get_all_products():
+        lsid = p.get("last_supplier_id")
+        if lsid is not None:
+            try:
+                if int(lsid) == sid:
+                    supplier_pids.add(int(p["product_id"]))
+            except (ValueError, TypeError):
+                pass
+
+    if not supplier_pids:
+        return [], {"revenue": 0, "cogs": 0, "profit": 0}
+
+    # Invoice dates in range
+    inv_dates = {}
+    for inv in get_all_invoices():
+        created = inv["created_at"]
+        if isinstance(created, datetime):
+            inv_date = created.date()
+        elif isinstance(created, date):
+            inv_date = created
+        else:
+            continue
+        if start <= inv_date <= end:
+            inv_dates[int(inv["invoice_id"])] = inv_date
+
+    with _lock:
+        wb = _open()
+        ws = wb["InvoiceItems"]
+        by_product = {}
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(ITEM_HEADERS, row)
+            iid = int(item["invoice_id"])
+            if iid not in inv_dates:
+                continue
+            pid = int(item["product_id"] or 0)
+            if pid not in supplier_pids:
+                continue
+            qty = int(item["quantity"] or 0)
+            purchase_price = float(item["purchase_price"] or 0)
+            line_total = float(item["line_total"] or 0)
+            cogs = purchase_price * qty
+            profit = line_total - cogs
+            if pid not in by_product:
+                by_product[pid] = {
+                    "product_id": pid,
+                    "product_name": item["product_name"] or "",
+                    "total_qty": 0,
+                    "total_cogs": 0.0,
+                    "total_revenue": 0.0,
+                    "total_profit": 0.0,
+                }
+            by_product[pid]["total_qty"] += qty
+            by_product[pid]["total_cogs"] += cogs
+            by_product[pid]["total_revenue"] += line_total
+            by_product[pid]["total_profit"] += profit
+        wb.close()
+
+    rows = list(by_product.values())
+    for r in rows:
+        r["total_cogs"] = round(r["total_cogs"], 2)
+        r["total_revenue"] = round(r["total_revenue"], 2)
+        r["total_profit"] = round(r["total_profit"], 2)
+    rows.sort(key=lambda x: x["product_name"].lower())
+    total_revenue = round(sum(r["total_revenue"] for r in rows), 2)
+    total_cogs = round(sum(r["total_cogs"] for r in rows), 2)
+    total_profit = round(total_revenue - total_cogs, 2)
+    return rows, {"revenue": total_revenue, "cogs": total_cogs, "profit": total_profit}

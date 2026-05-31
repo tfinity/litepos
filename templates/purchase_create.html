@@ -19,7 +19,7 @@
                         <select class="form-select" id="supplierSelect">
                             <option value="">-- Select Supplier --</option>
                             {% for s in suppliers %}
-                            <option value="{{ s.id }}" {{ 'selected' if request.args.get('supplier_id') == s.id|string }}>{{ s.name }}</option>
+                            <option value="{{ s.supplier_id }}" {{ 'selected' if request.args.get('supplier_id') == s.supplier_id|string }}>{{ s.name }}</option>
                             {% endfor %}
                         </select>
                     </div>
@@ -202,7 +202,7 @@ async function submitPurchase() {
     const payload = {
         supplier_id: parseInt(supplier_id),
         notes: document.getElementById('noteInput').value,
-        items: cart.map(c => ({ product_id: c.product_id, qty: c.qty, purchase_price: c.price }))
+        items: cart.map(c => ({ product_id: c.product_id, quantity: c.qty, unit_cost: c.price }))
     };
     try {
         const res = await fetch('{{ url_for("purchase_create") }}', {

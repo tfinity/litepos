@@ -48,8 +48,9 @@ def init_workbook():
                     quantity       INT DEFAULT 0,
                     barcode        VARCHAR(100),
                     expiry_date    DATE,
-                    category       VARCHAR(100),
-                    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+                    category         VARCHAR(100),
+                    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_supplier_id INT
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
             cur.execute("""
@@ -75,8 +76,19 @@ def init_workbook():
                     total          DECIMAL(12,2),
                     payment_method VARCHAR(50),
                     customer_id    INT,
+                    status         VARCHAR(20) DEFAULT 'active',
+                    deleted_at     DATETIME,
+                    deleted_by     VARCHAR(100),
+                    delete_reason  TEXT,
                     FOREIGN KEY (customer_id) REFERENCES customers(customer_id) ON DELETE SET NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                ALTER TABLE invoices
+                ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active',
+                ADD COLUMN IF NOT EXISTS deleted_at DATETIME,
+                ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100),
+                ADD COLUMN IF NOT EXISTS delete_reason TEXT;
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS invoice_items (
@@ -112,6 +124,55 @@ def init_workbook():
                     note        TEXT,
                     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS suppliers (
+                    supplier_id INT AUTO_INCREMENT PRIMARY KEY,
+                    name        VARCHAR(255) NOT NULL,
+                    phone       VARCHAR(50),
+                    email       VARCHAR(100),
+                    address     TEXT,
+                    notes       TEXT,
+                    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS purchase_invoices (
+                    purchase_id  INT AUTO_INCREMENT PRIMARY KEY,
+                    supplier_id  INT NOT NULL,
+                    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    total_amount DECIMAL(12,2),
+                    notes        TEXT,
+                    FOREIGN KEY (supplier_id) REFERENCES suppliers(supplier_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS purchase_invoice_items (
+                    item_id      INT AUTO_INCREMENT PRIMARY KEY,
+                    purchase_id  INT NOT NULL,
+                    product_id   INT,
+                    product_name VARCHAR(255),
+                    quantity     INT,
+                    unit_cost    DECIMAL(12,2),
+                    line_total   DECIMAL(12,2),
+                    FOREIGN KEY (purchase_id) REFERENCES purchase_invoices(purchase_id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS supplier_ledger (
+                    entry_id    INT AUTO_INCREMENT PRIMARY KEY,
+                    supplier_id INT NOT NULL,
+                    purchase_id INT,
+                    type        ENUM('debit','credit') NOT NULL,
+                    amount      DECIMAL(12,2),
+                    note        TEXT,
+                    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            # Add last_supplier_id to products if not exists
+            cur.execute("""
+                ALTER TABLE products
+                ADD COLUMN IF NOT EXISTS last_supplier_id INT DEFAULT NULL;
             """)
 
 
@@ -414,10 +475,20 @@ def get_customer_product_aggregates(customer_id):
 
 # ── Invoices ──────────────────────────────────────────────────────────
 
-def get_all_invoices():
+def get_all_invoices(include_deleted=False):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM invoices ORDER BY invoice_id DESC")
+            if include_deleted:
+                cur.execute("SELECT * FROM invoices ORDER BY invoice_id DESC")
+            else:
+                cur.execute("SELECT * FROM invoices WHERE status != 'deleted' OR status IS NULL ORDER BY invoice_id DESC")
+            return cur.fetchall()
+
+
+def get_deleted_invoices():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM invoices WHERE status = 'deleted' ORDER BY invoice_id DESC")
             return cur.fetchall()
 
 
@@ -426,6 +497,38 @@ def get_invoice(invoice_id):
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM invoices WHERE invoice_id = %s", (int(invoice_id),))
             return cur.fetchone()
+
+
+def delete_invoice(invoice_id, deleted_by, reason=""):
+    """Soft-delete: mark deleted, reverse stock, reverse credit ledger."""
+    iid = int(invoice_id)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM invoices WHERE invoice_id = %s", (iid,))
+            inv = cur.fetchone()
+            if not inv:
+                raise ValueError("Invoice not found")
+            if inv.get("status") == "deleted":
+                raise ValueError("Invoice already deleted")
+            # Reverse stock
+            cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s", (iid,))
+            for item in cur.fetchall():
+                cur.execute(
+                    "UPDATE products SET quantity = quantity + %s WHERE product_id = %s",
+                    (int(item["quantity"]), int(item["product_id"]))
+                )
+            # Reverse credit ledger
+            cur.execute(
+                "UPDATE credit_ledger SET entry_type = 'deleted' WHERE invoice_id = %s",
+                (iid,)
+            )
+            # Soft-delete
+            from datetime import datetime as _dt
+            cur.execute(
+                """UPDATE invoices SET status='deleted', deleted_at=%s, deleted_by=%s, delete_reason=%s
+                   WHERE invoice_id = %s""",
+                (_dt.now(), deleted_by, reason, iid)
+            )
 
 
 def get_invoice_items(invoice_id):
@@ -893,3 +996,261 @@ def delete_user(user_id):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM users WHERE user_id = %s", (int(user_id),))
+
+
+# ── Suppliers ─────────────────────────────────────────────────────────
+
+def get_all_suppliers():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM suppliers ORDER BY supplier_id")
+            return cur.fetchall()
+
+
+def get_supplier(supplier_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM suppliers WHERE supplier_id = %s", (int(supplier_id),))
+            return cur.fetchone()
+
+
+def add_supplier(data):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO suppliers (name, phone, email, address, notes, created_at)
+                VALUES (%s,%s,%s,%s,%s,%s)
+            """, (
+                (data.get("name") or "").strip(),
+                (data.get("phone") or "").strip(),
+                (data.get("email") or "").strip(),
+                (data.get("address") or "").strip(),
+                (data.get("notes") or "").strip(),
+                datetime.now(),
+            ))
+            return cur.lastrowid
+
+
+def update_supplier(supplier_id, data):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE suppliers SET name=%s, phone=%s, email=%s, address=%s, notes=%s
+                WHERE supplier_id=%s
+            """, (
+                (data.get("name") or "").strip(),
+                (data.get("phone") or "").strip(),
+                (data.get("email") or "").strip(),
+                (data.get("address") or "").strip(),
+                (data.get("notes") or "").strip(),
+                int(supplier_id),
+            ))
+
+
+def delete_supplier(supplier_id):
+    sid = int(supplier_id)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM purchase_invoices WHERE supplier_id=%s", (sid,))
+            if cur.fetchone()["cnt"] > 0:
+                raise ValueError("Cannot delete supplier: purchase invoices reference this supplier.")
+            cur.execute("DELETE FROM suppliers WHERE supplier_id=%s", (sid,))
+    return True
+
+
+def supplier_lookup():
+    return {s["supplier_id"]: s for s in get_all_suppliers()}
+
+
+# ── Purchase Invoices ─────────────────────────────────────────────────
+
+def create_purchase_invoice(supplier_id, items, notes=""):
+    sid = int(supplier_id)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT supplier_id FROM suppliers WHERE supplier_id=%s", (sid,))
+            if not cur.fetchone():
+                raise ValueError("Supplier not found.")
+
+            total_amount = 0.0
+            line_entries = []
+
+            for item in items:
+                pid = int(item["product_id"])
+                qty = int(item["quantity"])
+                unit_cost = float(item["unit_cost"])
+                cur.execute("SELECT * FROM products WHERE product_id=%s FOR UPDATE", (pid,))
+                prod = cur.fetchone()
+                if not prod:
+                    raise ValueError(f"Product ID {pid} not found")
+                line_total = round(unit_cost * qty, 2)
+                total_amount += line_total
+                line_entries.append((pid, prod["name"], qty, unit_cost, line_total))
+                cur.execute(
+                    "UPDATE products SET quantity=quantity+%s, purchase_price=%s, last_supplier_id=%s WHERE product_id=%s",
+                    (qty, unit_cost, sid, pid)
+                )
+
+            total_amount = round(total_amount, 2)
+            cur.execute("""
+                INSERT INTO purchase_invoices (supplier_id, created_at, total_amount, notes)
+                VALUES (%s,%s,%s,%s)
+            """, (sid, datetime.now(), total_amount, (notes or "").strip()))
+            purchase_id = cur.lastrowid
+
+            for pid, pname, qty, uc, lt in line_entries:
+                cur.execute("""
+                    INSERT INTO purchase_invoice_items
+                        (purchase_id, product_id, product_name, quantity, unit_cost, line_total)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                """, (purchase_id, pid, pname, qty, uc, lt))
+
+            cur.execute("""
+                INSERT INTO supplier_ledger (supplier_id, purchase_id, type, amount, note, created_at)
+                VALUES (%s,%s,'debit',%s,%s,%s)
+            """, (sid, purchase_id, total_amount, f"Purchase invoice #{purchase_id}", datetime.now()))
+
+    return purchase_id
+
+
+def get_all_purchase_invoices():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM purchase_invoices ORDER BY purchase_id DESC")
+            return cur.fetchall()
+
+
+def get_purchase_invoice(purchase_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM purchase_invoices WHERE purchase_id=%s", (int(purchase_id),))
+            return cur.fetchone()
+
+
+def get_purchase_invoice_items(purchase_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM purchase_invoice_items WHERE purchase_id=%s",
+                (int(purchase_id),)
+            )
+            return cur.fetchall()
+
+
+# ── Supplier Ledger ───────────────────────────────────────────────────
+
+def add_supplier_payment(supplier_id, amount, note=""):
+    sid = int(supplier_id)
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    if not get_supplier(sid):
+        raise ValueError("Supplier not found.")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO supplier_ledger (supplier_id, purchase_id, type, amount, note, created_at)
+                VALUES (%s, NULL, 'credit', %s, %s, %s)
+            """, (sid, amount, (note or "").strip(), datetime.now()))
+            return cur.lastrowid
+
+
+def get_supplier_ledger_entries(supplier_id=None):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            if supplier_id is not None:
+                cur.execute(
+                    "SELECT * FROM supplier_ledger WHERE supplier_id=%s ORDER BY entry_id",
+                    (int(supplier_id),)
+                )
+            else:
+                cur.execute("SELECT * FROM supplier_ledger ORDER BY entry_id")
+            return cur.fetchall()
+
+
+def get_supplier_balance(supplier_id):
+    entries = get_supplier_ledger_entries(supplier_id)
+    total_debt = sum(float(e["amount"] or 0) for e in entries if e["type"] == "debit")
+    total_paid = sum(float(e["amount"] or 0) for e in entries if e["type"] == "credit")
+    return round(total_debt, 2), round(total_paid, 2), round(total_debt - total_paid, 2)
+
+
+def get_all_supplier_balances():
+    smap = supplier_lookup()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT supplier_id,
+                       SUM(CASE WHEN type='debit'  THEN amount ELSE 0 END) AS total_debt,
+                       SUM(CASE WHEN type='credit' THEN amount ELSE 0 END) AS total_paid
+                FROM supplier_ledger GROUP BY supplier_id
+            """)
+            rows = cur.fetchall()
+    result = []
+    for row in rows:
+        sid = int(row["supplier_id"])
+        balance = round(float(row["total_debt"]) - float(row["total_paid"]), 2)
+        result.append({
+            "supplier": smap.get(sid),
+            "supplier_id": sid,
+            "total_debt": round(float(row["total_debt"]), 2),
+            "total_paid": round(float(row["total_paid"]), 2),
+            "balance": balance,
+        })
+    result.sort(key=lambda x: x["balance"], reverse=True)
+    return result
+
+
+# ── P&L Reports ───────────────────────────────────────────────────────
+
+def get_sales_pl_report(start_date, end_date):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    DATE(i.created_at) AS date,
+                    i.invoice_id,
+                    ii.product_name,
+                    ii.quantity,
+                    ii.purchase_price,
+                    ROUND(ii.line_total / ii.quantity, 2) AS sale_price,
+                    ii.line_total,
+                    ROUND(ii.purchase_price * ii.quantity, 2) AS cogs,
+                    ROUND(ii.line_total - ii.purchase_price * ii.quantity, 2) AS profit
+                FROM invoice_items ii
+                JOIN invoices i ON i.invoice_id = ii.invoice_id
+                WHERE DATE(i.created_at) BETWEEN %s AND %s
+                ORDER BY i.created_at, i.invoice_id
+            """, (start_date, end_date))
+            rows = cur.fetchall()
+    total_revenue = round(sum(float(r["line_total"]) for r in rows), 2)
+    total_cogs = round(sum(float(r["cogs"]) for r in rows), 2)
+    total_profit = round(total_revenue - total_cogs, 2)
+    return rows, {"revenue": total_revenue, "cogs": total_cogs, "profit": total_profit}
+
+
+def get_supplier_sales_pl(supplier_id, start_date, end_date):
+    sid = int(supplier_id)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    ii.product_id,
+                    ii.product_name,
+                    SUM(ii.quantity) AS total_qty,
+                    ROUND(SUM(ii.purchase_price * ii.quantity), 2) AS total_cogs,
+                    ROUND(SUM(ii.line_total), 2) AS total_revenue,
+                    ROUND(SUM(ii.line_total - ii.purchase_price * ii.quantity), 2) AS total_profit
+                FROM invoice_items ii
+                JOIN invoices i ON i.invoice_id = ii.invoice_id
+                JOIN products p ON p.product_id = ii.product_id
+                WHERE p.last_supplier_id = %s
+                  AND DATE(i.created_at) BETWEEN %s AND %s
+                GROUP BY ii.product_id, ii.product_name
+                ORDER BY ii.product_name
+            """, (sid, start_date, end_date))
+            rows = cur.fetchall()
+    total_revenue = round(sum(float(r["total_revenue"]) for r in rows), 2)
+    total_cogs = round(sum(float(r["total_cogs"]) for r in rows), 2)
+    total_profit = round(total_revenue - total_cogs, 2)
+    return rows, {"revenue": total_revenue, "cogs": total_cogs, "profit": total_profit}

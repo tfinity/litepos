@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Deleted Receipts{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-trash"></i> Deleted Receipts</h2>
+    <a href="{{ url_for('invoices') }}" class="btn btn-secondary">
+        <i class="bi bi-arrow-left"></i> Back to Invoices
+    </a>
+</div>
+
+{% if invoices %}
+<div class="table-responsive">
+    <table class="table table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>Invoice #</th>
+                <th>Sale Date</th>
+                <th>Customer</th>
+                <th class="text-end">Total ({{ currency }})</th>
+                <th>Deleted By</th>
+                <th>Deleted At</th>
+                <th>Reason</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for inv in invoices %}
+            <tr class="table-danger">
+                <td>INV-{{ "%04d"|format(inv.invoice_id) }}</td>
+                <td>{{ inv.created_at.strftime('%Y-%m-%d %H:%M') if inv.created_at and inv.created_at.strftime is defined else inv.created_at or '—' }}</td>
+                <td>
+                    {% if inv.customer %}{{ inv.customer.name }}
+                    {% else %}<span class="text-muted">Walk-in</span>{% endif %}
+                </td>
+                <td class="text-end">{{ "{:,.2f}".format(inv.total) }}</td>
+                <td>{{ inv.deleted_by or '—' }}</td>
+                <td>{{ inv.deleted_at or '—' }}</td>
+                <td>{{ inv.delete_reason or '—' }}</td>
+                <td>
+                    <a href="{{ url_for('invoice_detail', invoice_id=inv.invoice_id) }}" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-eye"></i>
+                    </a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">No deleted receipts.</div>
+{% endif %}
+{% endblock %}
