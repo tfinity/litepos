@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block title %}New Purchase Invoice{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-bag-plus"></i> New Purchase Invoice</h2>
+    <a href="{{ url_for('purchases_list') }}" class="btn btn-secondary">
+        <i class="bi bi-arrow-left"></i> Back
+    </a>
+</div>
+
+<div class="row g-4">
+    <!-- Left: supplier + items -->
+    <div class="col-lg-8">
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Supplier <span class="text-danger">*</span></label>
+                        <select class="form-select" id="supplierSelect">
+                            <option value="">-- Select Supplier --</option>
+                            {% for s in suppliers %}
+                            <option value="{{ s.id }}" {{ 'selected' if request.args.get('supplier_id') == s.id|string }}>{{ s.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Note (optional)</label>
+                        <input type="text" id="noteInput" class="form-control" placeholder="e.g. Batch #, delivery ref">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Product search -->
+        <div class="card mb-3">
+            <div class="card-body" style="position:relative">
+                <label class="form-label fw-bold">Add Product</label>
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-5">
+                        <input type="text" id="productSearch" class="form-control" placeholder="Search product name or ID..." autocomplete="off">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small text-muted mb-1">Qty</label>
+                        <input type="number" id="addQty" class="form-control" value="1" min="1" step="1">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small text-muted mb-1">Purchase Price</label>
+                        <input type="number" id="addPrice" class="form-control" step="0.01" min="0" placeholder="0.00">
+                    </div>
+                    <div class="col-md-1">
+                        <button type="button" class="btn btn-dark w-100" onclick="addToCart()">
+                            <i class="bi bi-plus"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="searchResults" class="list-group mt-2" style="display:none; position:absolute; z-index:1000; max-height:260px; overflow-y:auto; width:50%"></div>
+            </div>
+        </div>
+
+        <!-- Cart table -->
+        <div class="card">
+            <div class="card-header"><strong>Items</strong></div>
+            <div class="table-responsive">
+                <table class="table mb-0" id="cartTable">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Product</th>
+                            <th class="text-end">Qty</th>
+                            <th class="text-end">Purchase Price</th>
+                            <th class="text-end">Subtotal</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="cartBody">
+                        <tr><td colspan="5" class="text-center text-muted py-4">No items added yet.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right: summary -->
+    <div class="col-lg-4">
+        <div class="card sticky-top" style="top:80px">
+            <div class="card-header"><strong>Summary</strong></div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Items:</span>
+                    <span id="summaryItems">0</span>
+                </div>
+                <hr>
+                <div class="d-flex justify-content-between fw-bold fs-5">
+                    <span>Total ({{ currency }}):</span>
+                    <span id="summaryTotal">0.00</span>
+                </div>
+                <div class="mt-3">
+                    <button type="button" class="btn btn-dark w-100" id="submitBtn" disabled onclick="submitPurchase()">
+                        <i class="bi bi-check-circle"></i> Save Purchase Invoice
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const products = {{ products | tojson }};
+const currency = '{{ currency }}';
+let cart = [];
+let selectedProduct = null;
+
+const searchInput = document.getElementById('productSearch');
+const resultsDiv = document.getElementById('searchResults');
+const addPriceInput = document.getElementById('addPrice');
+
+searchInput.addEventListener('input', function() {
+    const q = this.value.trim().toLowerCase();
+    if (!q) { resultsDiv.style.display = 'none'; return; }
+    const matches = products.filter(p =>
+        (p.name || '').toLowerCase().includes(q) || String(p.product_id).includes(q)
+    ).slice(0, 10);
+    if (!matches.length) { resultsDiv.style.display = 'none'; return; }
+    resultsDiv.innerHTML = matches.map(p =>
+        `<button type="button" class="list-group-item list-group-item-action" onclick="selectProduct(${p.product_id})">
+            <strong>${p.name}</strong>
+            <span class="text-muted small ms-2">Price: ${currency} ${parseFloat(p.purchase_price||0).toFixed(2)}</span>
+        </button>`
+    ).join('');
+    resultsDiv.style.display = 'block';
+});
+
+function selectProduct(id) {
+    selectedProduct = products.find(p => p.product_id === id);
+    searchInput.value = selectedProduct.name;
+    addPriceInput.value = parseFloat(selectedProduct.purchase_price || 0).toFixed(2);
+    resultsDiv.style.display = 'none';
+}
+
+document.addEventListener('click', function(e) {
+    if (!resultsDiv.contains(e.target) && e.target !== searchInput) {
+        resultsDiv.style.display = 'none';
+    }
+});
+
+function addToCart() {
+    if (!selectedProduct) { alert('Select a product first.'); return; }
+    const qty = parseInt(document.getElementById('addQty').value) || 1;
+    const price = parseFloat(addPriceInput.value) || 0;
+    if (price <= 0) { alert('Enter a purchase price.'); return; }
+    const existing = cart.find(c => c.product_id === selectedProduct.product_id);
+    if (existing) {
+        existing.qty += qty;
+        existing.price = price;
+    } else {
+        cart.push({ product_id: selectedProduct.product_id, name: selectedProduct.name, qty, price });
+    }
+    renderCart();
+    searchInput.value = '';
+    addPriceInput.value = '';
+    document.getElementById('addQty').value = 1;
+    selectedProduct = null;
+}
+
+function removeFromCart(idx) {
+    cart.splice(idx, 1);
+    renderCart();
+}
+
+function renderCart() {
+    const tbody = document.getElementById('cartBody');
+    if (!cart.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">No items added yet.</td></tr>';
+        document.getElementById('summaryItems').textContent = '0';
+        document.getElementById('summaryTotal').textContent = '0.00';
+        document.getElementById('submitBtn').disabled = true;
+        return;
+    }
+    let total = 0;
+    tbody.innerHTML = cart.map((item, i) => {
+        const sub = item.qty * item.price;
+        total += sub;
+        return `<tr>
+            <td>${item.name}</td>
+            <td class="text-end">${item.qty}</td>
+            <td class="text-end">${item.price.toFixed(2)}</td>
+            <td class="text-end fw-bold">${sub.toFixed(2)}</td>
+            <td><button type="button" class="btn btn-sm btn-outline-danger" onclick="removeFromCart(${i})"><i class="bi bi-trash"></i></button></td>
+        </tr>`;
+    }).join('');
+    document.getElementById('summaryItems').textContent = cart.length;
+    document.getElementById('summaryTotal').textContent = total.toFixed(2);
+    document.getElementById('submitBtn').disabled = false;
+}
+
+async function submitPurchase() {
+    const supplier_id = document.getElementById('supplierSelect').value;
+    if (!supplier_id) { alert('Select a supplier.'); return; }
+    if (!cart.length) { alert('Add at least one item.'); return; }
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+    const payload = {
+        supplier_id: parseInt(supplier_id),
+        notes: document.getElementById('noteInput').value,
+        items: cart.map(c => ({ product_id: c.product_id, qty: c.qty, purchase_price: c.price }))
+    };
+    try {
+        const res = await fetch('{{ url_for("purchase_create") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.purchase_id) {
+            window.location.href = '/purchases/' + data.purchase_id;
+        } else {
+            alert(data.error || 'Failed to save purchase.');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-circle"></i> Save Purchase Invoice';
+        }
+    } catch(e) {
+        alert('Network error. Try again.');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check-circle"></i> Save Purchase Invoice';
+    }
+}
+</script>
+{% endblock %}

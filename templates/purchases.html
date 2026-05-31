@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Purchase Invoices{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-bag-plus"></i> Purchase Invoices</h2>
+    <a href="{{ url_for('purchase_create') }}" class="btn btn-dark">
+        <i class="bi bi-plus-circle"></i> New Purchase
+    </a>
+</div>
+
+{% if purchases %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th>#</th>
+                    <th>Date</th>
+                    <th>Supplier</th>
+                    <th class="text-end">Total ({{ currency }})</th>
+                    <th>Note</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in purchases %}
+                <tr>
+                    <td>INV-{{ p.purchase_id }}</td>
+                    <td>
+                        {% if p.created_at %}
+                        {{ p.created_at.strftime('%Y-%m-%d') if p.created_at.strftime is defined else p.created_at }}
+                        {% else %}—{% endif %}
+                    </td>
+                    <td>
+                        {% if p.supplier %}
+                        <a href="{{ url_for('supplier_detail', supplier_id=p.supplier_id) }}">{{ p.supplier.name }}</a>
+                        {% else %}
+                        <span class="text-muted">#{{ p.supplier_id }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end fw-bold">{{ "{:,.2f}".format(p.total_amount) }}</td>
+                    <td>{{ p.notes or '—' }}</td>
+                    <td>
+                        <a href="{{ url_for('purchase_detail', purchase_id=p.purchase_id) }}" class="btn btn-sm btn-outline-dark">
+                            <i class="bi bi-eye"></i>
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-info">No purchase invoices yet. <a href="{{ url_for('purchase_create') }}">Create your first purchase.</a></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}P&L Report{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-graph-up-arrow"></i> Profit & Loss Report</h2>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">From</label>
+                <input type="date" name="start" class="form-control" value="{{ start_date.isoformat() }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">To</label>
+                <input type="date" name="end" class="form-control" value="{{ end_date.isoformat() }}">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Supplier (optional)</label>
+                <select name="supplier_id" class="form-select">
+                    <option value="">All Suppliers</option>
+                    {% for s in suppliers %}
+                    <option value="{{ s.id }}" {{ 'selected' if supplier_id == s.id|string }}>{{ s.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-dark w-100"><i class="bi bi-funnel"></i> Filter</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Summary cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card border-success">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Total Revenue</h6>
+                <p class="fs-4 fw-bold text-success mb-0">{{ currency }} {{ "{:,.2f}".format(totals.revenue) }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-danger">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Total Cost (COGS)</h6>
+                <p class="fs-4 fw-bold text-danger mb-0">{{ currency }} {{ "{:,.2f}".format(totals.cogs) }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card {{ 'border-success' if totals.profit >= 0 else 'border-danger' }}">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Gross Profit</h6>
+                <p class="fs-4 fw-bold {{ 'text-success' if totals.profit >= 0 else 'text-danger' }} mb-0">
+                    {{ currency }} {{ "{:,.2f}".format(totals.profit) }}
+                </p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Margin</h6>
+                <p class="fs-4 fw-bold mb-0">
+                    {% if totals.revenue > 0 %}
+                    {{ "{:.1f}".format(totals.profit / totals.revenue * 100) }}%
+                    {% else %}—{% endif %}
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if rows %}
+{% if report_type == 'supplier' %}
+<!-- Supplier report: grouped by product -->
+<div class="card">
+    <div class="card-header">
+        <strong>Product Breakdown</strong>
+        {% if supplier %}<span class="text-muted ms-2">— {{ supplier.name }}</span>{% endif %}
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th>Product</th>
+                    <th class="text-end">Qty Sold</th>
+                    <th class="text-end">Revenue ({{ currency }})</th>
+                    <th class="text-end">Cost ({{ currency }})</th>
+                    <th class="text-end">Profit ({{ currency }})</th>
+                    <th class="text-end">Margin %</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td>{{ row.product_name }}</td>
+                    <td class="text-end">{{ row.total_qty }}</td>
+                    <td class="text-end text-success">{{ "{:,.2f}".format(row.total_revenue) }}</td>
+                    <td class="text-end text-danger">{{ "{:,.2f}".format(row.total_cogs) }}</td>
+                    <td class="text-end fw-bold {{ 'text-success' if row.total_profit >= 0 else 'text-danger' }}">
+                        {{ "{:,.2f}".format(row.total_profit) }}
+                    </td>
+                    <td class="text-end">
+                        {% if row.total_revenue > 0 %}
+                        {{ "{:.1f}".format(row.total_profit / row.total_revenue * 100) }}%
+                        {% else %}—{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<!-- Overall report: line-by-line per invoice item -->
+<div class="card">
+    <div class="card-header"><strong>Sales Breakdown</strong></div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th>Date</th>
+                    <th>Invoice</th>
+                    <th>Product</th>
+                    <th class="text-end">Qty</th>
+                    <th class="text-end">Sale Price</th>
+                    <th class="text-end">Revenue ({{ currency }})</th>
+                    <th class="text-end">Cost ({{ currency }})</th>
+                    <th class="text-end">Profit ({{ currency }})</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td>{{ row.date }}</td>
+                    <td><a href="{{ url_for('invoice_detail', invoice_id=row.invoice_id) }}">#{{ row.invoice_id }}</a></td>
+                    <td>{{ row.product_name }}</td>
+                    <td class="text-end">{{ row.quantity }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(row.sale_price) }}</td>
+                    <td class="text-end text-success">{{ "{:,.2f}".format(row.line_total) }}</td>
+                    <td class="text-end text-danger">{{ "{:,.2f}".format(row.cogs) }}</td>
+                    <td class="text-end fw-bold {{ 'text-success' if row.profit >= 0 else 'text-danger' }}">
+                        {{ "{:,.2f}".format(row.profit) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% else %}
+<div class="alert alert-info">No sales data for the selected period.</div>
+{% endif %}
+{% endblock %}
