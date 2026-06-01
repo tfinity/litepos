@@ -83,13 +83,16 @@ def init_workbook():
                     FOREIGN KEY (customer_id) REFERENCES customers(customer_id) ON DELETE SET NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
-            cur.execute("""
-                ALTER TABLE invoices
-                ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active',
-                ADD COLUMN IF NOT EXISTS deleted_at DATETIME,
-                ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(100),
-                ADD COLUMN IF NOT EXISTS delete_reason TEXT;
-            """)
+            for _col in [
+                "ALTER TABLE invoices ADD COLUMN status VARCHAR(20) DEFAULT 'active'",
+                "ALTER TABLE invoices ADD COLUMN deleted_at DATETIME",
+                "ALTER TABLE invoices ADD COLUMN deleted_by VARCHAR(100)",
+                "ALTER TABLE invoices ADD COLUMN delete_reason TEXT",
+            ]:
+                try:
+                    cur.execute(_col)
+                except Exception:
+                    pass  # column already exists
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS invoice_items (
                     item_id         INT AUTO_INCREMENT PRIMARY KEY,
@@ -170,10 +173,10 @@ def init_workbook():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
             # Add last_supplier_id to products if not exists
-            cur.execute("""
-                ALTER TABLE products
-                ADD COLUMN IF NOT EXISTS last_supplier_id INT DEFAULT NULL;
-            """)
+            try:
+                cur.execute("ALTER TABLE products ADD COLUMN last_supplier_id INT DEFAULT NULL")
+            except Exception:
+                pass  # column already exists
 
 
 def normalize_customer_id(val):
