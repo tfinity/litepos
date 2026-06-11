@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Inventory Valuation{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-boxes"></i> Inventory Valuation</h2>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card border-dark">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Total Stock Value (at cost)</h6>
+                <p class="fs-3 fw-bold mb-0">{{ currency }} {{ "{:,.2f}".format(total_value) }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Total Units</h6>
+                <p class="fs-3 fw-bold mb-0">{{ "{:,}".format(total_units) }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Lines</h6>
+                <p class="fs-3 fw-bold mb-0">{{ rows | length }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if zero_cost_count %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    <strong>{{ zero_cost_count }}</strong> product(s) have stock but <strong>no cost price</strong>,
+    so they add nothing to stock value and show 100% profit when sold. Fix their purchase price
+    (a purchase invoice will set it via weighted average).
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header"><strong>Stock on hand, valued at cost</strong></div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th>Product</th>
+                    <th class="text-end">Qty</th>
+                    <th class="text-end">Unit Cost ({{ currency }})</th>
+                    <th class="text-end">Value ({{ currency }})</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rows %}
+                <tr class="{{ 'table-warning' if r.zero_cost }}">
+                    <td>{{ r.name }}</td>
+                    <td class="text-end">{{ "{:,}".format(r.quantity) }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(r.cost) }}</td>
+                    <td class="text-end fw-bold">{{ "{:,.2f}".format(r.value) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" class="text-center text-muted py-4">No stock on hand.</td></tr>
+                {% endfor %}
+            </tbody>
+            <tfoot class="table-light fw-bold">
+                <tr>
+                    <td colspan="3" class="text-end">Total Stock Value</td>
+                    <td class="text-end">{{ currency }} {{ "{:,.2f}".format(total_value) }}</td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+</div>
+{% endblock %}

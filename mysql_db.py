@@ -1166,9 +1166,17 @@ def create_purchase_invoice(supplier_id, items, notes=""):
                 line_total = round(unit_cost * qty, 2)
                 total_amount += line_total
                 line_entries.append((pid, prod["name"], qty, unit_cost, line_total))
+                # Weighted-average cost: blend old stock value with the new receipt
+                old_qty = int(prod["quantity"] or 0)
+                old_cost = float(prod["purchase_price"] or 0)
+                new_qty = old_qty + qty
+                if old_qty > 0 and old_cost > 0 and new_qty > 0:
+                    new_cost = round((old_qty * old_cost + qty * unit_cost) / new_qty, 2)
+                else:
+                    new_cost = unit_cost
                 cur.execute(
-                    "UPDATE products SET quantity=quantity+%s, purchase_price=%s, last_supplier_id=%s WHERE product_id=%s",
-                    (qty, unit_cost, sid, pid)
+                    "UPDATE products SET quantity=%s, purchase_price=%s, last_supplier_id=%s WHERE product_id=%s",
+                    (new_qty, new_cost, sid, pid)
                 )
 
             total_amount = round(total_amount, 2)

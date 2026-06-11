@@ -134,6 +134,9 @@
                     <a class="nav-link {{ 'active' if request.endpoint == 'stock_report' }}" href="{{ url_for('stock_report') }}">
                         <i class="bi bi-clipboard-data"></i> Stock Report
                     </a>
+                    <a class="nav-link {{ 'active' if request.endpoint == 'inventory_valuation' }}" href="{{ url_for('inventory_valuation') }}">
+                        <i class="bi bi-boxes"></i> Stock Valuation
+                    </a>
                     <a class="nav-link {{ 'active' if request.endpoint == 'expiry_report' }}" href="{{ url_for('expiry_report') }}">
                         <i class="bi bi-calendar-x"></i> Expiry Report
                     </a>

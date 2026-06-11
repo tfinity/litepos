@@ -1524,10 +1524,16 @@ def create_purchase_invoice(supplier_id, items, notes=""):
                 item_id_start + i, purchase_id, pid,
                 prow[1].value, qty, unit_cost, line_total,
             ])
-            # Update stock
-            prow[5].value = int(prow[5].value or 0) + qty
-            # Update purchase price and last_supplier_id on product
-            prow[2].value = unit_cost
+            # Weighted-average cost: blend old stock value with the new receipt
+            old_qty = int(prow[5].value or 0)
+            old_cost = float(prow[2].value or 0)
+            new_qty = old_qty + qty
+            if old_qty > 0 and old_cost > 0 and new_qty > 0:
+                new_cost = round((old_qty * old_cost + qty * unit_cost) / new_qty, 2)
+            else:
+                new_cost = unit_cost
+            prow[5].value = new_qty
+            prow[2].value = new_cost
             prow[10].value = sid
 
         total_amount = round(total_amount, 2)

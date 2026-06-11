@@ -1119,6 +1119,32 @@ def cash_flow():
                            cash_in=cash_in, cash_out=cash_out, net=net)
 
 
+@app.route("/inventory/valuation")
+@login_required
+def inventory_valuation():
+    products = excel_db.get_all_products()
+    rows = []
+    total_value = 0.0
+    total_units = 0
+    for p in products:
+        qty = int(p.get("quantity") or 0)
+        cost = float(p.get("purchase_price") or 0)
+        value = round(qty * cost, 2)
+        if qty == 0 and value == 0:
+            continue
+        rows.append({"name": p.get("name"), "quantity": qty,
+                     "cost": cost, "value": value,
+                     "zero_cost": cost == 0 and qty > 0})
+        total_value += value
+        total_units += qty
+    rows.sort(key=lambda r: r["value"], reverse=True)
+    zero_cost_count = sum(1 for r in rows if r["zero_cost"])
+    return render_template("inventory_valuation.html", rows=rows,
+                           total_value=round(total_value, 2),
+                           total_units=total_units,
+                           zero_cost_count=zero_cost_count)
+
+
 @app.route("/accounting/partners")
 @login_required
 def partners():
