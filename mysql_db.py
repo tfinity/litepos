@@ -9,6 +9,27 @@ import pymysql.cursors
 
 from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
 
+# Standard chart of accounts (code, name, type, is_system)
+CHART_OF_ACCOUNTS = [
+    ("1000", "Cash",                "asset",     True),
+    ("1010", "Bank",                "asset",     True),
+    ("1100", "Accounts Receivable", "asset",     True),
+    ("1200", "Inventory",           "asset",     True),
+    ("2000", "Accounts Payable",    "liability", True),
+    ("2100", "Tax Payable",         "liability", True),
+    ("3000", "Owner Capital",       "equity",    True),
+    ("3100", "Owner Drawings",      "equity",    True),
+    ("3900", "Retained Earnings",   "equity",    True),
+    ("4000", "Sales Revenue",       "income",    True),
+    ("5000", "Cost of Goods Sold",  "expense",   True),
+    ("5100", "Rent",                "expense",   False),
+    ("5200", "Salaries",            "expense",   False),
+    ("5300", "Utilities",           "expense",   False),
+    ("5400", "Transport",           "expense",   False),
+    ("5900", "Miscellaneous",       "expense",   False),
+]
+_DEBIT_NORMAL_TYPES = ("asset", "expense")
+
 
 @contextmanager
 def _conn():
@@ -177,6 +198,41 @@ def init_workbook():
                 cur.execute("ALTER TABLE products ADD COLUMN last_supplier_id INT DEFAULT NULL")
             except Exception:
                 pass  # column already exists
+
+            # ── Double-entry accounting ──
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS accounts (
+                    account_id INT AUTO_INCREMENT PRIMARY KEY,
+                    code       VARCHAR(20) NOT NULL UNIQUE,
+                    name       VARCHAR(255) NOT NULL,
+                    type       ENUM('asset','liability','equity','income','expense') NOT NULL,
+                    is_system  TINYINT(1) DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS journal_entries (
+                    entry_id    INT AUTO_INCREMENT PRIMARY KEY,
+                    date        DATETIME NOT NULL,
+                    description VARCHAR(500),
+                    source_type VARCHAR(50),
+                    source_id   INT,
+                    created_by  VARCHAR(100),
+                    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS journal_lines (
+                    line_id    INT AUTO_INCREMENT PRIMARY KEY,
+                    entry_id   INT NOT NULL,
+                    account_id INT NOT NULL,
+                    debit      DECIMAL(14,2) DEFAULT 0,
+                    credit     DECIMAL(14,2) DEFAULT 0,
+                    FOREIGN KEY (entry_id) REFERENCES journal_entries(entry_id) ON DELETE CASCADE,
+                    FOREIGN KEY (account_id) REFERENCES accounts(account_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+    seed_chart_of_accounts()
 
 
 def normalize_customer_id(val):
@@ -1289,3 +1345,171 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
     total_cogs = round(sum(float(r["total_cogs"]) for r in rows), 2)
     total_profit = round(total_revenue - total_cogs, 2)
     return rows, {"revenue": total_revenue, "cogs": total_cogs, "profit": total_profit}
+
+
+# ── Double-entry accounting: data layer ──────────────────────────────
+
+def seed_chart_of_accounts():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS n FROM accounts")
+            if cur.fetchone()["n"] > 0:
+                return
+            cur.executemany(
+                "INSERT INTO accounts (code, name, type, is_system) VALUES (%s,%s,%s,%s)",
+                [(c, n, t, 1 if sys else 0) for c, n, t, sys in CHART_OF_ACCOUNTS],
+            )
+
+
+def get_all_accounts():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM accounts ORDER BY code")
+            return cur.fetchall()
+
+
+def get_account(account_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM accounts WHERE account_id = %s", (int(account_id),))
+            return cur.fetchone()
+
+
+def get_account_by_code(code):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM accounts WHERE code = %s", (str(code).strip(),))
+            return cur.fetchone()
+
+
+def get_accounts_by_type(atype):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM accounts WHERE type = %s ORDER BY code", (atype,))
+            return cur.fetchall()
+
+
+def add_account(code, name, atype, is_system=False):
+    code = str(code).strip()
+    if not code or not str(name).strip():
+        raise ValueError("Account code and name are required.")
+    if atype not in ("asset", "liability", "equity", "income", "expense"):
+        raise ValueError("Invalid account type.")
+    if get_account_by_code(code):
+        raise ValueError(f"Account code {code} already exists.")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO accounts (code, name, type, is_system) VALUES (%s,%s,%s,%s)",
+                (code, str(name).strip(), atype, 1 if is_system else 0),
+            )
+            return cur.lastrowid
+
+
+def post_journal(description, lines, source_type="manual", source_id=None,
+                 created_by="system", entry_date=None):
+    """Post a balanced double-entry journal entry. lines: list of
+    {account_id, debit, credit}. Returns entry_id; raises ValueError if unbalanced."""
+    if not lines or len(lines) < 2:
+        raise ValueError("A journal entry needs at least two lines.")
+    norm = []
+    total_debit = 0.0
+    total_credit = 0.0
+    for ln in lines:
+        aid = int(ln["account_id"])
+        debit = round(float(ln.get("debit", 0) or 0), 2)
+        credit = round(float(ln.get("credit", 0) or 0), 2)
+        if debit < 0 or credit < 0:
+            raise ValueError("Debit/credit cannot be negative.")
+        if debit > 0 and credit > 0:
+            raise ValueError("A line cannot have both debit and credit.")
+        if debit == 0 and credit == 0:
+            continue
+        norm.append((aid, debit, credit))
+        total_debit += debit
+        total_credit += credit
+    if not norm:
+        raise ValueError("Journal entry has no non-zero lines.")
+    if round(total_debit - total_credit, 2) != 0:
+        raise ValueError(
+            f"Entry not balanced: debits {total_debit:.2f} != credits {total_credit:.2f}")
+
+    when = entry_date or datetime.now()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            ids = {a["account_id"] for a in get_all_accounts()}
+            for aid, _, _ in norm:
+                if aid not in ids:
+                    raise ValueError(f"Account id {aid} not found.")
+            cur.execute(
+                """INSERT INTO journal_entries (date, description, source_type, source_id, created_by)
+                   VALUES (%s,%s,%s,%s,%s)""",
+                (when, str(description).strip(), source_type, source_id, created_by),
+            )
+            entry_id = cur.lastrowid
+            cur.executemany(
+                "INSERT INTO journal_lines (entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s)",
+                [(entry_id, aid, debit, credit) for aid, debit, credit in norm],
+            )
+            return entry_id
+
+
+def get_journal_lines(entry_id=None):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            if entry_id is not None:
+                cur.execute("SELECT * FROM journal_lines WHERE entry_id = %s", (int(entry_id),))
+            else:
+                cur.execute("SELECT * FROM journal_lines")
+            return cur.fetchall()
+
+
+def get_account_balance(account_id):
+    aid = int(account_id)
+    acct = get_account(aid)
+    if not acct:
+        raise ValueError("Account not found.")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(SUM(debit),0) AS d, COALESCE(SUM(credit),0) AS c "
+                "FROM journal_lines WHERE account_id = %s", (aid,))
+            r = cur.fetchone()
+    debit = float(r["d"])
+    credit = float(r["c"])
+    if acct["type"] in _DEBIT_NORMAL_TYPES:
+        return round(debit - credit, 2)
+    return round(credit - debit, 2)
+
+
+def get_trial_balance():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT a.account_id, a.code, a.name, a.type,
+                       COALESCE(SUM(jl.debit),0) AS debit,
+                       COALESCE(SUM(jl.credit),0) AS credit
+                FROM accounts a
+                LEFT JOIN journal_lines jl ON jl.account_id = a.account_id
+                GROUP BY a.account_id, a.code, a.name, a.type
+                ORDER BY a.code
+            """)
+            raw = cur.fetchall()
+    rows = []
+    total_debit = 0.0
+    total_credit = 0.0
+    for r in raw:
+        d = round(float(r["debit"]), 2)
+        c = round(float(r["credit"]), 2)
+        if d == 0 and c == 0:
+            continue
+        acct = {"account_id": r["account_id"], "code": r["code"],
+                "name": r["name"], "type": r["type"]}
+        if r["type"] in _DEBIT_NORMAL_TYPES:
+            bal = round(d - c, 2)
+        else:
+            bal = round(c - d, 2)
+        rows.append({"account": acct, "debit": d, "credit": c, "balance": bal})
+        total_debit += d
+        total_credit += c
+    return rows, {"debit": round(total_debit, 2), "credit": round(total_credit, 2)}

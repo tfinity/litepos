@@ -69,6 +69,40 @@ SUPPLIER_LEDGER_HEADERS = [
     "entry_id", "supplier_id", "purchase_id", "type", "amount", "note", "created_at",
 ]
 
+# ── Double-entry accounting ──────────────────────────────────────────
+ACCOUNT_HEADERS = [
+    "account_id", "code", "name", "type", "is_system", "created_at",
+]
+JOURNAL_HEADERS = [
+    "entry_id", "date", "description", "source_type", "source_id", "created_by", "created_at",
+]
+JOURNAL_LINE_HEADERS = [
+    "line_id", "entry_id", "account_id", "debit", "credit",
+]
+
+# Account types: asset, liability, equity, income, expense
+# Normal balance: assets & expenses are debit-normal; the rest credit-normal.
+CHART_OF_ACCOUNTS = [
+    # code, name, type, is_system
+    ("1000", "Cash",                "asset",     True),
+    ("1010", "Bank",                "asset",     True),
+    ("1100", "Accounts Receivable", "asset",     True),
+    ("1200", "Inventory",           "asset",     True),
+    ("2000", "Accounts Payable",    "liability", True),
+    ("2100", "Tax Payable",         "liability", True),
+    ("3000", "Owner Capital",       "equity",    True),
+    ("3100", "Owner Drawings",      "equity",    True),
+    ("3900", "Retained Earnings",   "equity",    True),
+    ("4000", "Sales Revenue",       "income",    True),
+    ("5000", "Cost of Goods Sold",  "expense",   True),
+    ("5100", "Rent",                "expense",   False),
+    ("5200", "Salaries",            "expense",   False),
+    ("5300", "Utilities",           "expense",   False),
+    ("5400", "Transport",           "expense",   False),
+    ("5900", "Miscellaneous",       "expense",   False),
+]
+_DEBIT_NORMAL_TYPES = ("asset", "expense")
+
 
 def _is_valid_xlsx():
     from zipfile import BadZipFile
@@ -107,9 +141,16 @@ def init_workbook():
         ws9.append(PURCHASE_ITEM_HEADERS)
         ws10 = wb.create_sheet("SupplierLedger")
         ws10.append(SUPPLIER_LEDGER_HEADERS)
+        ws11 = wb.create_sheet("Accounts")
+        ws11.append(ACCOUNT_HEADERS)
+        ws12 = wb.create_sheet("JournalEntries")
+        ws12.append(JOURNAL_HEADERS)
+        ws13 = wb.create_sheet("JournalLines")
+        ws13.append(JOURNAL_LINE_HEADERS)
         _save(wb)
         wb.close()
     ensure_workbook_schema()
+    seed_chart_of_accounts()
 
 
 def ensure_workbook_schema():
@@ -148,6 +189,15 @@ def ensure_workbook_schema():
             changed = True
         if "SupplierLedger" not in wb.sheetnames:
             wb.create_sheet("SupplierLedger").append(SUPPLIER_LEDGER_HEADERS)
+            changed = True
+        if "Accounts" not in wb.sheetnames:
+            wb.create_sheet("Accounts").append(ACCOUNT_HEADERS)
+            changed = True
+        if "JournalEntries" not in wb.sheetnames:
+            wb.create_sheet("JournalEntries").append(JOURNAL_HEADERS)
+            changed = True
+        if "JournalLines" not in wb.sheetnames:
+            wb.create_sheet("JournalLines").append(JOURNAL_LINE_HEADERS)
             changed = True
         # Add last_supplier_id column to Products if missing
         ws_prod = wb["Products"]
@@ -1768,3 +1818,210 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
     total_cogs = round(sum(r["total_cogs"] for r in rows), 2)
     total_profit = round(total_revenue - total_cogs, 2)
     return rows, {"revenue": total_revenue, "cogs": total_cogs, "profit": total_profit}
+
+
+# ── Double-entry accounting: data layer ──────────────────────────────
+
+def seed_chart_of_accounts():
+    """Insert the standard chart of accounts if the Accounts sheet is empty."""
+    with _lock:
+        wb = _open()
+        if "Accounts" not in wb.sheetnames:
+            wb.create_sheet("Accounts").append(ACCOUNT_HEADERS)
+        ws = wb["Accounts"]
+        has_any = any(row[0] is not None
+                      for row in ws.iter_rows(min_row=2, max_row=2, values_only=True))
+        if has_any:
+            wb.close()
+            return
+        next_id = 1
+        for code, name, atype, is_system in CHART_OF_ACCOUNTS:
+            ws.append([next_id, code, name, atype, bool(is_system), datetime.now()])
+            next_id += 1
+        _save(wb)
+        wb.close()
+
+
+def get_all_accounts():
+    with _lock:
+        wb = _open()
+        ws = wb["Accounts"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            a = _row_to_dict(ACCOUNT_HEADERS, row)
+            a["account_id"] = int(a["account_id"])
+            rows.append(a)
+        wb.close()
+    rows.sort(key=lambda x: str(x["code"]))
+    return rows
+
+
+def get_account(account_id):
+    aid = int(account_id)
+    for a in get_all_accounts():
+        if a["account_id"] == aid:
+            return a
+    return None
+
+
+def get_account_by_code(code):
+    code = str(code).strip()
+    for a in get_all_accounts():
+        if str(a["code"]) == code:
+            return a
+    return None
+
+
+def get_accounts_by_type(atype):
+    return [a for a in get_all_accounts() if a["type"] == atype]
+
+
+def add_account(code, name, atype, is_system=False):
+    code = str(code).strip()
+    if not code or not str(name).strip():
+        raise ValueError("Account code and name are required.")
+    if atype not in ("asset", "liability", "equity", "income", "expense"):
+        raise ValueError("Invalid account type.")
+    if get_account_by_code(code):
+        raise ValueError(f"Account code {code} already exists.")
+    with _lock:
+        wb = _open()
+        ws = wb["Accounts"]
+        aid = _next_id(ws)
+        ws.append([aid, code, str(name).strip(), atype, bool(is_system), datetime.now()])
+        _save(wb)
+        wb.close()
+    return aid
+
+
+def post_journal(description, lines, source_type="manual", source_id=None,
+                 created_by="system", entry_date=None):
+    """Post a balanced double-entry journal entry.
+    lines: list of {account_id, debit, credit}. Sum(debit) must equal sum(credit).
+    Returns the new entry_id. Raises ValueError if unbalanced or invalid.
+    """
+    if not lines or len(lines) < 2:
+        raise ValueError("A journal entry needs at least two lines.")
+    norm = []
+    total_debit = 0.0
+    total_credit = 0.0
+    for ln in lines:
+        aid = int(ln["account_id"])
+        debit = round(float(ln.get("debit", 0) or 0), 2)
+        credit = round(float(ln.get("credit", 0) or 0), 2)
+        if debit < 0 or credit < 0:
+            raise ValueError("Debit/credit cannot be negative.")
+        if debit > 0 and credit > 0:
+            raise ValueError("A line cannot have both debit and credit.")
+        if debit == 0 and credit == 0:
+            continue
+        norm.append((aid, debit, credit))
+        total_debit += debit
+        total_credit += credit
+    if not norm:
+        raise ValueError("Journal entry has no non-zero lines.")
+    if round(total_debit - total_credit, 2) != 0:
+        raise ValueError(
+            f"Entry not balanced: debits {total_debit:.2f} != credits {total_credit:.2f}")
+
+    when = entry_date or datetime.now()
+    with _lock:
+        wb = _open()
+        for sheet, headers in (("Accounts", ACCOUNT_HEADERS),
+                               ("JournalEntries", JOURNAL_HEADERS),
+                               ("JournalLines", JOURNAL_LINE_HEADERS)):
+            if sheet not in wb.sheetnames:
+                wb.create_sheet(sheet).append(headers)
+        ws_je = wb["JournalEntries"]
+        ws_jl = wb["JournalLines"]
+        # validate account ids exist
+        valid_ids = set()
+        for row in wb["Accounts"].iter_rows(min_row=2, values_only=True):
+            if row[0] is not None:
+                valid_ids.add(int(row[0]))
+        for aid, _, _ in norm:
+            if aid not in valid_ids:
+                wb.close()
+                raise ValueError(f"Account id {aid} not found.")
+
+        entry_id = _next_id(ws_je)
+        ws_je.append([entry_id, when, str(description).strip(),
+                      source_type, source_id, created_by, datetime.now()])
+        line_id = _next_id(ws_jl)
+        for aid, debit, credit in norm:
+            ws_jl.append([line_id, entry_id, aid, debit, credit])
+            line_id += 1
+        _save(wb)
+        wb.close()
+    return entry_id
+
+
+def get_journal_lines(entry_id=None):
+    eid = int(entry_id) if entry_id is not None else None
+    with _lock:
+        wb = _open()
+        if "JournalLines" not in wb.sheetnames:
+            wb.close()
+            return []
+        ws = wb["JournalLines"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_LINE_HEADERS, row)
+            if eid is not None and int(d["entry_id"]) != eid:
+                continue
+            rows.append(d)
+        wb.close()
+    return rows
+
+
+def get_account_balance(account_id):
+    """Signed balance in the account's normal direction.
+    Debit-normal (asset/expense): debit - credit. Credit-normal: credit - debit."""
+    aid = int(account_id)
+    acct = get_account(aid)
+    if not acct:
+        raise ValueError("Account not found.")
+    debit = 0.0
+    credit = 0.0
+    for ln in get_journal_lines():
+        if int(ln["account_id"]) != aid:
+            continue
+        debit += float(ln["debit"] or 0)
+        credit += float(ln["credit"] or 0)
+    if acct["type"] in _DEBIT_NORMAL_TYPES:
+        return round(debit - credit, 2)
+    return round(credit - debit, 2)
+
+
+def get_trial_balance():
+    """Return per-account totals and the grand debit/credit totals.
+    For a correct ledger, total_debit == total_credit."""
+    accounts = {a["account_id"]: a for a in get_all_accounts()}
+    sums = {aid: {"debit": 0.0, "credit": 0.0} for aid in accounts}
+    for ln in get_journal_lines():
+        aid = int(ln["account_id"])
+        if aid not in sums:
+            sums[aid] = {"debit": 0.0, "credit": 0.0}
+        sums[aid]["debit"] += float(ln["debit"] or 0)
+        sums[aid]["credit"] += float(ln["credit"] or 0)
+    rows = []
+    total_debit = 0.0
+    total_credit = 0.0
+    for aid, acct in accounts.items():
+        d = round(sums[aid]["debit"], 2)
+        c = round(sums[aid]["credit"], 2)
+        if d == 0 and c == 0:
+            continue
+        if acct["type"] in _DEBIT_NORMAL_TYPES:
+            bal = round(d - c, 2)
+        else:
+            bal = round(c - d, 2)
+        rows.append({"account": acct, "debit": d, "credit": c, "balance": bal})
+        total_debit += d
+        total_credit += c
+    rows.sort(key=lambda r: str(r["account"]["code"]))
+    return rows, {"debit": round(total_debit, 2), "credit": round(total_credit, 2)}
