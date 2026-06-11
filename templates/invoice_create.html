@@ -93,7 +93,13 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Cart</h5>
-                <span class="badge bg-primary" id="cartCount">0 items</span>
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="costToggleBtn"
+                            onclick="toggleCost()" title="Show cost prices (hidden from customer view)">
+                        <i class="bi bi-eye-slash" id="costToggleIcon"></i> <span id="costToggleText">Show cost</span>
+                    </button>
+                    <span class="badge bg-primary" id="cartCount">0 items</span>
+                </div>
             </div>
             <div class="card-body">
                 <div class="table-responsive">
@@ -212,6 +218,26 @@ let cart = [];
 let searchTimeout = null;
 let customerSearchTimeout = null;
 let quotationMode = false;
+let showCost = false;
+
+function toggleCost() {
+    showCost = !showCost;
+    const icon = document.getElementById('costToggleIcon');
+    const text = document.getElementById('costToggleText');
+    const btn = document.getElementById('costToggleBtn');
+    if (showCost) {
+        icon.className = 'bi bi-eye';
+        text.textContent = 'Hide cost';
+        btn.classList.remove('btn-outline-secondary');
+        btn.classList.add('btn-secondary');
+    } else {
+        icon.className = 'bi bi-eye-slash';
+        text.textContent = 'Show cost';
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-outline-secondary');
+    }
+    renderCart();
+}
 
 function onModeToggle() {
     quotationMode = document.getElementById('quotationModeToggle').checked;
@@ -434,6 +460,7 @@ function addToCart() {
     const listCounter = parseFloat(document.getElementById('selListCounter').textContent);
     const unitPrice = getSelectedUnitPrice();
     const purchasePrice = parseFloat(document.getElementById('selPurchase').textContent);
+    const mrp = parseFloat(document.getElementById('selMRP').textContent) || 0;
     const qty = parseInt(document.getElementById('selQty').value);
     const discAmt = parseFloat(document.getElementById('selDiscount').value) || 0;
     const maxStock = parseInt(document.getElementById('selStock').textContent);
@@ -467,6 +494,7 @@ function addToCart() {
             list_counter: listCounter,
             unit_price: unitPrice,
             purchase_price: purchasePrice,
+            mrp: mrp,
             quantity: qty,
             discount_per_unit: discAmt,
             discount_total: discAmt * qty,
@@ -556,8 +584,11 @@ function renderCart() {
             const stockHint = quotationMode && item.quantity > item.max_stock
                 ? `<div class="small text-warning"><i class="bi bi-exclamation-triangle"></i> Stock: ${item.max_stock}</div>`
                 : '';
+            const costLine = showCost
+                ? `<div class="small text-muted"><i class="bi bi-tag"></i> Purch: ${item.purchase_price.toFixed(2)} · List: ${item.list_counter.toFixed(2)} · MRP: ${(item.mrp || 0).toFixed(2)}</div>`
+                : '';
             return `<tr>
-                <td>${escapeHtml(item.product_name)}${listHint}${stockHint}</td>
+                <td>${escapeHtml(item.product_name)}${costLine}${listHint}${stockHint}</td>
                 <td>
                     <input type="number" class="form-control form-control-sm" style="width:95px"
                            value="${item.unit_price.toFixed(2)}" min="0" step="0.01"
