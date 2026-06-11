@@ -1119,6 +1119,33 @@ def cash_flow():
                            cash_in=cash_in, cash_out=cash_out, net=net)
 
 
+@app.route("/accounting/categories/add", methods=["POST"])
+@login_required
+def category_add():
+    name = request.form.get("name", "").strip()
+    if not name:
+        flash("Category name is required.", "danger")
+        return redirect(url_for("expenses"))
+    try:
+        excel_db.add_account(excel_db.next_expense_code(), name, "expense", is_system=False)
+        flash(f"Category '{name}' added.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("expenses"))
+
+
+@app.route("/accounting/categories/<int:account_id>/rename", methods=["POST"])
+@login_required
+def category_rename(account_id):
+    name = request.form.get("name", "").strip()
+    try:
+        excel_db.update_account_name(account_id, name)
+        flash("Category renamed.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("expenses"))
+
+
 @app.route("/accounting/income-statement")
 @login_required
 def income_statement():

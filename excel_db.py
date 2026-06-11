@@ -1823,22 +1823,29 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
 # ── Double-entry accounting: data layer ──────────────────────────────
 
 def seed_chart_of_accounts():
-    """Insert the standard chart of accounts if the Accounts sheet is empty."""
+    """Insert any standard accounts that are missing (idempotent, keyed by code)."""
     with _lock:
         wb = _open()
         if "Accounts" not in wb.sheetnames:
             wb.create_sheet("Accounts").append(ACCOUNT_HEADERS)
         ws = wb["Accounts"]
-        has_any = any(row[0] is not None
-                      for row in ws.iter_rows(min_row=2, max_row=2, values_only=True))
-        if has_any:
-            wb.close()
-            return
-        next_id = 1
+        existing_codes = set()
+        max_id = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            existing_codes.add(str(row[1]))
+            max_id = max(max_id, int(row[0]))
+        added = False
+        next_id = max_id + 1
         for code, name, atype, is_system in CHART_OF_ACCOUNTS:
+            if str(code) in existing_codes:
+                continue
             ws.append([next_id, code, name, atype, bool(is_system), datetime.now()])
             next_id += 1
-        _save(wb)
+            added = True
+        if added:
+            _save(wb)
         wb.close()
 
 
@@ -1894,6 +1901,39 @@ def add_account(code, name, atype, is_system=False):
         _save(wb)
         wb.close()
     return aid
+
+
+def update_account_name(account_id, name):
+    aid = int(account_id)
+    name = str(name).strip()
+    if not name:
+        raise ValueError("Name is required.")
+    with _lock:
+        wb = _open()
+        ws = wb["Accounts"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == aid:
+                if bool(row[4].value):
+                    wb.close()
+                    raise ValueError("System accounts cannot be renamed.")
+                row[2].value = name  # name column
+                _save(wb)
+                wb.close()
+                return
+        wb.close()
+    raise ValueError("Account not found.")
+
+
+def next_expense_code():
+    """Next available expense account code in the 5xxx+ range."""
+    codes = [int(a["code"]) for a in get_accounts_by_type("expense")
+             if str(a["code"]).isdigit()]
+    base = max(codes) if codes else 5000
+    code = base + 10
+    existing = {str(a["code"]) for a in get_all_accounts()}
+    while str(code) in existing:
+        code += 10
+    return str(code)
 
 
 def post_journal(description, lines, source_type="manual", source_id=None,

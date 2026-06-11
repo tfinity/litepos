@@ -1579,3 +1579,30 @@ def get_expense_entries(start_date=None, end_date=None):
             "created_by": r["created_by"],
         })
     return entries
+
+
+def update_account_name(account_id, name):
+    aid = int(account_id)
+    name = str(name).strip()
+    if not name:
+        raise ValueError("Name is required.")
+    acct = get_account(aid)
+    if not acct:
+        raise ValueError("Account not found.")
+    if acct.get("is_system"):
+        raise ValueError("System accounts cannot be renamed.")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE accounts SET name = %s WHERE account_id = %s", (name, aid))
+
+
+def next_expense_code():
+    """Next available expense account code in the 5xxx+ range."""
+    codes = [int(a["code"]) for a in get_accounts_by_type("expense")
+             if str(a["code"]).isdigit()]
+    base = max(codes) if codes else 5000
+    code = base + 10
+    existing = {str(a["code"]) for a in get_all_accounts()}
+    while str(code) in existing:
+        code += 10
+    return str(code)

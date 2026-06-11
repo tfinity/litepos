@@ -41,6 +41,32 @@
                 </form>
             </div>
         </div>
+
+        <!-- Manage categories -->
+        <div class="card mt-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>Categories</strong>
+                <button class="btn btn-sm btn-outline-secondary py-0" data-bs-toggle="collapse" data-bs-target="#catManage">
+                    <i class="bi bi-gear"></i> Manage
+                </button>
+            </div>
+            <div class="collapse" id="catManage">
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('category_add') }}" class="input-group input-group-sm mb-3">
+                        <input type="text" name="name" class="form-control" placeholder="New category name" required>
+                        <button class="btn btn-dark"><i class="bi bi-plus"></i> Add</button>
+                    </form>
+                    <div class="small text-muted mb-2">Rename existing:</div>
+                    {% for a in expense_accounts %}
+                    <form method="POST" action="{{ url_for('category_rename', account_id=a.account_id) }}"
+                          class="input-group input-group-sm mb-2">
+                        <input type="text" name="name" class="form-control" value="{{ a.name }}" required>
+                        <button class="btn btn-outline-secondary" title="Save"><i class="bi bi-check"></i></button>
+                    </form>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- List -->
