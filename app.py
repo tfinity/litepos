@@ -981,6 +981,7 @@ def pl_report():
 
     suppliers = excel_db.get_all_suppliers()
 
+    credit_outstanding = 0.0
     if supplier_id:
         supplier = excel_db.get_supplier(int(supplier_id))
         rows, totals = excel_db.get_supplier_sales_pl(int(supplier_id), start_date, end_date)
@@ -989,6 +990,8 @@ def pl_report():
         supplier = None
         rows, totals = excel_db.get_sales_pl_report(start_date, end_date)
         report_type = "overall"
+        balances = excel_db.get_all_credit_balances()
+        credit_outstanding = round(sum(b["balance"] for b in balances if b["balance"] > 0), 2)
 
     return render_template("pl_report.html",
                            rows=rows,
@@ -998,7 +1001,8 @@ def pl_report():
                            supplier_id=supplier_id,
                            start_date=start_date,
                            end_date=end_date,
-                           report_type=report_type)
+                           report_type=report_type,
+                           credit_outstanding=credit_outstanding)
 
 
 if __name__ == "__main__":

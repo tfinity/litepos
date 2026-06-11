@@ -75,6 +75,58 @@
     </div>
 </div>
 
+{% if report_type == 'overall' and totals.paid is defined %}
+<!-- Paid vs Credit split -->
+<div class="card mb-4">
+    <div class="card-header"><strong>Paid vs Credit Sales</strong></div>
+    <div class="table-responsive">
+        <table class="table mb-0 align-middle">
+            <thead class="table-dark">
+                <tr>
+                    <th>Type</th>
+                    <th class="text-end">Revenue ({{ currency }})</th>
+                    <th class="text-end">Cost ({{ currency }})</th>
+                    <th class="text-end">Profit ({{ currency }})</th>
+                    <th class="text-end">Margin %</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><span class="badge bg-success">Paid</span> <span class="text-muted small">Cash / Card / Mobile</span></td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.paid.revenue) }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.paid.cogs) }}</td>
+                    <td class="text-end fw-bold text-success">{{ "{:,.2f}".format(totals.paid.profit) }}</td>
+                    <td class="text-end">{% if totals.paid.revenue > 0 %}{{ "{:.1f}".format(totals.paid.profit / totals.paid.revenue * 100) }}%{% else %}—{% endif %}</td>
+                </tr>
+                <tr class="table-warning">
+                    <td><span class="badge bg-warning text-dark">Credit</span> <span class="text-muted small">sold unpaid</span></td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.credit.revenue) }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.credit.cogs) }}</td>
+                    <td class="text-end fw-bold">{{ "{:,.2f}".format(totals.credit.profit) }}</td>
+                    <td class="text-end">{% if totals.credit.revenue > 0 %}{{ "{:.1f}".format(totals.credit.profit / totals.credit.revenue * 100) }}%{% else %}—{% endif %}</td>
+                </tr>
+            </tbody>
+            <tfoot class="table-light">
+                <tr class="fw-bold">
+                    <td>Total</td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.revenue) }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.cogs) }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.profit) }}</td>
+                    <td class="text-end">{% if totals.revenue > 0 %}{{ "{:.1f}".format(totals.profit / totals.revenue * 100) }}%{% else %}—{% endif %}</td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+    <div class="card-footer small text-muted">
+        <i class="bi bi-info-circle"></i>
+        <strong>Credit</strong> profit ({{ currency }} {{ "{:,.2f}".format(totals.credit.profit) }}) is unrealized — money not yet received.
+        Credit is grouped by how the sale was made, not current paid status.
+        Total still outstanding to collect: <strong>{{ currency }} {{ "{:,.2f}".format(credit_outstanding) }}</strong>
+        (<a href="{{ url_for('credit_ledger') }}">Credit Ledger</a>).
+    </div>
+</div>
+{% endif %}
+
 {% if rows %}
 {% if report_type == 'supplier' %}
 <!-- Supplier report: grouped by product -->
@@ -136,9 +188,12 @@
             </thead>
             <tbody>
                 {% for row in rows %}
-                <tr>
+                <tr {{ 'class=table-warning' if row.is_credit }}>
                     <td>{{ row.date }}</td>
-                    <td><a href="{{ url_for('invoice_detail', invoice_id=row.invoice_id) }}">#{{ row.invoice_id }}</a></td>
+                    <td>
+                        <a href="{{ url_for('invoice_detail', invoice_id=row.invoice_id) }}">#{{ row.invoice_id }}</a>
+                        {% if row.is_credit %}<span class="badge bg-warning text-dark">Credit</span>{% endif %}
+                    </td>
                     <td>{{ row.product_name }}</td>
                     <td class="text-end">{{ row.quantity }}</td>
                     <td class="text-end">{{ "{:,.2f}".format(row.sale_price) }}</td>

@@ -1607,8 +1607,8 @@ def get_sales_pl_report(start_date, end_date):
     start = start_date if isinstance(start_date, date) else datetime.strptime(str(start_date), "%Y-%m-%d").date()
     end = end_date if isinstance(end_date, date) else datetime.strptime(str(end_date), "%Y-%m-%d").date()
 
-    # Collect invoice_ids in range + their dates
-    inv_dates = {}
+    # Collect invoice_ids in range + their dates and payment method
+    inv_meta = {}
     for inv in get_all_invoices():
         created = inv["created_at"]
         if isinstance(created, datetime):
@@ -1618,10 +1618,13 @@ def get_sales_pl_report(start_date, end_date):
         else:
             continue
         if start <= inv_date <= end:
-            inv_dates[int(inv["invoice_id"])] = inv_date
+            inv_meta[int(inv["invoice_id"])] = {
+                "date": inv_date,
+                "is_credit": str(inv.get("payment_method") or "").strip().lower() == "credit",
+            }
 
-    if not inv_dates:
-        return [], {"revenue": 0, "cogs": 0, "profit": 0}
+    if not inv_meta:
+        return [], _empty_pl_totals()
 
     with _lock:
         wb = _open()
@@ -1632,7 +1635,7 @@ def get_sales_pl_report(start_date, end_date):
                 continue
             item = _row_to_dict(ITEM_HEADERS, row)
             iid = int(item["invoice_id"])
-            if iid not in inv_dates:
+            if iid not in inv_meta:
                 continue
             qty = int(item["quantity"] or 0)
             purchase_price = float(item["purchase_price"] or 0)
@@ -1640,8 +1643,9 @@ def get_sales_pl_report(start_date, end_date):
             cogs = round(purchase_price * qty, 2)
             profit = round(line_total - cogs, 2)
             rows.append({
-                "date": inv_dates[iid],
+                "date": inv_meta[iid]["date"],
                 "invoice_id": iid,
+                "is_credit": inv_meta[iid]["is_credit"],
                 "product_name": item["product_name"],
                 "quantity": qty,
                 "purchase_price": purchase_price,
@@ -1653,10 +1657,35 @@ def get_sales_pl_report(start_date, end_date):
         wb.close()
 
     rows.sort(key=lambda x: (x["date"], x["invoice_id"]))
-    total_revenue = round(sum(r["line_total"] for r in rows), 2)
-    total_cogs = round(sum(r["cogs"] for r in rows), 2)
-    total_profit = round(total_revenue - total_cogs, 2)
-    return rows, {"revenue": total_revenue, "cogs": total_cogs, "profit": total_profit}
+    return rows, _split_pl_totals(rows)
+
+
+def _empty_pl_totals():
+    zero = {"revenue": 0, "cogs": 0, "profit": 0}
+    return {"revenue": 0, "cogs": 0, "profit": 0,
+            "paid": dict(zero), "credit": dict(zero)}
+
+
+def _split_pl_totals(rows):
+    """Aggregate rows into grand totals plus paid vs credit buckets.
+    Each row must have line_total, cogs, and is_credit."""
+    buckets = {"paid": {"revenue": 0.0, "cogs": 0.0},
+               "credit": {"revenue": 0.0, "cogs": 0.0}}
+    for r in rows:
+        b = buckets["credit"] if r.get("is_credit") else buckets["paid"]
+        b["revenue"] += r["line_total"]
+        b["cogs"] += r["cogs"]
+    out = {}
+    for key in ("paid", "credit"):
+        rev = round(buckets[key]["revenue"], 2)
+        cogs = round(buckets[key]["cogs"], 2)
+        out[key] = {"revenue": rev, "cogs": cogs, "profit": round(rev - cogs, 2)}
+    total_rev = round(out["paid"]["revenue"] + out["credit"]["revenue"], 2)
+    total_cogs = round(out["paid"]["cogs"] + out["credit"]["cogs"], 2)
+    out["revenue"] = total_rev
+    out["cogs"] = total_cogs
+    out["profit"] = round(total_rev - total_cogs, 2)
+    return out
 
 
 def get_supplier_sales_pl(supplier_id, start_date, end_date):

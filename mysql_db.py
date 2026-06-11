@@ -1206,6 +1206,34 @@ def get_all_supplier_balances():
 
 # ── P&L Reports ───────────────────────────────────────────────────────
 
+def _empty_pl_totals():
+    zero = {"revenue": 0, "cogs": 0, "profit": 0}
+    return {"revenue": 0, "cogs": 0, "profit": 0,
+            "paid": dict(zero), "credit": dict(zero)}
+
+
+def _split_pl_totals(rows):
+    """Aggregate rows into grand totals plus paid vs credit buckets.
+    Each row must have line_total, cogs, and is_credit."""
+    buckets = {"paid": {"revenue": 0.0, "cogs": 0.0},
+               "credit": {"revenue": 0.0, "cogs": 0.0}}
+    for r in rows:
+        b = buckets["credit"] if r.get("is_credit") else buckets["paid"]
+        b["revenue"] += float(r["line_total"])
+        b["cogs"] += float(r["cogs"])
+    out = {}
+    for key in ("paid", "credit"):
+        rev = round(buckets[key]["revenue"], 2)
+        cogs = round(buckets[key]["cogs"], 2)
+        out[key] = {"revenue": rev, "cogs": cogs, "profit": round(rev - cogs, 2)}
+    total_rev = round(out["paid"]["revenue"] + out["credit"]["revenue"], 2)
+    total_cogs = round(out["paid"]["cogs"] + out["credit"]["cogs"], 2)
+    out["revenue"] = total_rev
+    out["cogs"] = total_cogs
+    out["profit"] = round(total_rev - total_cogs, 2)
+    return out
+
+
 def get_sales_pl_report(start_date, end_date):
     with _conn() as conn:
         with conn.cursor() as cur:
@@ -1213,6 +1241,7 @@ def get_sales_pl_report(start_date, end_date):
                 SELECT
                     DATE(i.created_at) AS date,
                     i.invoice_id,
+                    i.payment_method,
                     ii.product_name,
                     ii.quantity,
                     ii.purchase_price,
@@ -1223,13 +1252,15 @@ def get_sales_pl_report(start_date, end_date):
                 FROM invoice_items ii
                 JOIN invoices i ON i.invoice_id = ii.invoice_id
                 WHERE DATE(i.created_at) BETWEEN %s AND %s
+                  AND (i.status IS NULL OR i.status <> 'deleted')
                 ORDER BY i.created_at, i.invoice_id
             """, (start_date, end_date))
             rows = cur.fetchall()
-    total_revenue = round(sum(float(r["line_total"]) for r in rows), 2)
-    total_cogs = round(sum(float(r["cogs"]) for r in rows), 2)
-    total_profit = round(total_revenue - total_cogs, 2)
-    return rows, {"revenue": total_revenue, "cogs": total_cogs, "profit": total_profit}
+    for r in rows:
+        r["is_credit"] = str(r.get("payment_method") or "").strip().lower() == "credit"
+    if not rows:
+        return [], _empty_pl_totals()
+    return rows, _split_pl_totals(rows)
 
 
 def get_supplier_sales_pl(supplier_id, start_date, end_date):
@@ -1249,6 +1280,7 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
                 JOIN products p ON p.product_id = ii.product_id
                 WHERE p.last_supplier_id = %s
                   AND DATE(i.created_at) BETWEEN %s AND %s
+                  AND (i.status IS NULL OR i.status <> 'deleted')
                 GROUP BY ii.product_id, ii.product_name
                 ORDER BY ii.product_name
             """, (sid, start_date, end_date))
