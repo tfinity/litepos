@@ -153,6 +153,9 @@
                     <a class="nav-link {{ 'active' if request.endpoint == 'expenses' }}" href="{{ url_for('expenses') }}">
                         <i class="bi bi-cash-stack"></i> Expenses
                     </a>
+                    <a class="nav-link {{ 'active' if request.endpoint == 'income_statement' }}" href="{{ url_for('income_statement') }}">
+                        <i class="bi bi-file-earmark-bar-graph"></i> Income Statement
+                    </a>
 
                     <div class="nav-section">Reports</div>
                     <a class="nav-link {{ 'active' if request.endpoint == 'pl_report' }}" href="{{ url_for('pl_report') }}">

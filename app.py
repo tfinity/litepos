@@ -1050,5 +1050,42 @@ def expenses():
                            start_date=start_date, end_date=end_date)
 
 
+@app.route("/accounting/income-statement")
+@login_required
+def income_statement():
+    today = date.today()
+    start_str = request.args.get("start", today.replace(day=1).isoformat())
+    end_str = request.args.get("end", today.isoformat())
+    try:
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = today.replace(day=1)
+        end_date = today
+
+    # Trading (sales) section from invoices
+    _, sales_totals = excel_db.get_sales_pl_report(start_date, end_date)
+    revenue = sales_totals["revenue"]
+    cogs = sales_totals["cogs"]
+    gross_profit = sales_totals["profit"]
+
+    # Operating expenses from the ledger, grouped by category
+    exp_entries = excel_db.get_expense_entries(start_date, end_date)
+    by_cat = {}
+    for e in exp_entries:
+        name = e["category"]["name"] if e["category"] else "Uncategorised"
+        by_cat[name] = round(by_cat.get(name, 0.0) + e["amount"], 2)
+    expense_rows = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)
+    total_expenses = round(sum(by_cat.values()), 2)
+
+    net_profit = round(gross_profit - total_expenses, 2)
+
+    return render_template("income_statement.html",
+                           start_date=start_date, end_date=end_date,
+                           revenue=revenue, cogs=cogs, gross_profit=gross_profit,
+                           expense_rows=expense_rows, total_expenses=total_expenses,
+                           net_profit=net_profit)
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

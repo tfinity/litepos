@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Income Statement{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-file-earmark-bar-graph"></i> Income Statement</h2>
+    <form method="GET" class="d-flex align-items-end gap-2">
+        <div>
+            <label class="form-label small mb-0">From</label>
+            <input type="date" name="start" class="form-control form-control-sm" value="{{ start_date.isoformat() }}">
+        </div>
+        <div>
+            <label class="form-label small mb-0">To</label>
+            <input type="date" name="end" class="form-control form-control-sm" value="{{ end_date.isoformat() }}">
+        </div>
+        <button class="btn btn-sm btn-dark"><i class="bi bi-funnel"></i> Apply</button>
+    </form>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header text-center">
+                <strong>Income Statement</strong>
+                <div class="small text-muted">{{ start_date.strftime('%d %b %Y') }} — {{ end_date.strftime('%d %b %Y') }}</div>
+            </div>
+            <div class="card-body">
+                <table class="table mb-0">
+                    <tbody>
+                        <!-- Trading -->
+                        <tr>
+                            <td class="fw-bold">Sales Revenue</td>
+                            <td class="text-end fw-bold">{{ currency }} {{ "{:,.2f}".format(revenue) }}</td>
+                        </tr>
+                        <tr>
+                            <td class="ps-3 text-muted">Less: Cost of Goods Sold</td>
+                            <td class="text-end text-danger">({{ "{:,.2f}".format(cogs) }})</td>
+                        </tr>
+                        <tr class="border-top">
+                            <td class="fw-bold">Gross Profit</td>
+                            <td class="text-end fw-bold {{ 'text-success' if gross_profit >= 0 else 'text-danger' }}">
+                                {{ currency }} {{ "{:,.2f}".format(gross_profit) }}
+                            </td>
+                        </tr>
+
+                        <!-- Expenses -->
+                        <tr>
+                            <td class="fw-bold pt-3" colspan="2">Operating Expenses</td>
+                        </tr>
+                        {% for name, amount in expense_rows %}
+                        <tr>
+                            <td class="ps-3 text-muted">{{ name }}</td>
+                            <td class="text-end text-danger">({{ "{:,.2f}".format(amount) }})</td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td class="ps-3 text-muted" colspan="2"><em>No expenses recorded in this period.</em></td>
+                        </tr>
+                        {% endfor %}
+                        <tr class="border-top">
+                            <td class="fw-bold">Total Expenses</td>
+                            <td class="text-end fw-bold text-danger">({{ "{:,.2f}".format(total_expenses) }})</td>
+                        </tr>
+
+                        <!-- Net -->
+                        <tr class="border-top border-2">
+                            <td class="fw-bold fs-5">Net Profit</td>
+                            <td class="text-end fw-bold fs-5 {{ 'text-success' if net_profit >= 0 else 'text-danger' }}">
+                                {{ currency }} {{ "{:,.2f}".format(net_profit) }}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="card-footer small text-muted">
+                <i class="bi bi-info-circle"></i> Revenue and cost come from sales invoices; expenses come from the
+                accounting ledger. Net profit = gross profit − operating expenses.
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
