@@ -1513,3 +1513,69 @@ def get_trial_balance():
         total_debit += d
         total_credit += c
     return rows, {"debit": round(total_debit, 2), "credit": round(total_credit, 2)}
+
+
+# ── Expenses (built on the journal) ──────────────────────────────────
+
+def record_expense(expense_account_id, amount, paid_from_account_id,
+                   description="", created_by="system", entry_date=None):
+    """Record an operating expense paid from a cash/bank account.
+    Posts: Dr Expense, Cr Cash/Bank."""
+    amount = round(float(amount), 2)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    exp = get_account(int(expense_account_id))
+    if not exp or exp["type"] != "expense":
+        raise ValueError("Select a valid expense category.")
+    src = get_account(int(paid_from_account_id))
+    if not src or src["type"] != "asset":
+        raise ValueError("Select a valid account to pay from (Cash/Bank).")
+    desc = (description or "").strip() or f"Expense: {exp['name']}"
+    return post_journal(
+        desc,
+        [{"account_id": exp["account_id"], "debit": amount},
+         {"account_id": src["account_id"], "credit": amount}],
+        source_type="expense", created_by=created_by, entry_date=entry_date)
+
+
+def get_expense_entries(start_date=None, end_date=None):
+    """List expense journal entries with amount, category, and paid-from account."""
+    where = ["je.source_type = 'expense'"]
+    params = []
+    if start_date:
+        where.append("DATE(je.date) >= %s")
+        params.append(start_date)
+    if end_date:
+        where.append("DATE(je.date) <= %s")
+        params.append(end_date)
+    clause = " AND ".join(where)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT je.entry_id, je.date, je.description, je.created_by,
+                       da.account_id AS exp_id, da.code AS exp_code, da.name AS exp_name, da.type AS exp_type,
+                       ca.account_id AS src_id, ca.code AS src_code, ca.name AS src_name, ca.type AS src_type,
+                       dl.debit AS amount
+                FROM journal_entries je
+                JOIN journal_lines dl ON dl.entry_id = je.entry_id AND dl.debit > 0
+                JOIN accounts da ON da.account_id = dl.account_id
+                LEFT JOIN journal_lines cl ON cl.entry_id = je.entry_id AND cl.credit > 0
+                LEFT JOIN accounts ca ON ca.account_id = cl.account_id
+                WHERE {clause}
+                ORDER BY je.entry_id DESC
+            """, params)
+            raw = cur.fetchall()
+    entries = []
+    for r in raw:
+        entries.append({
+            "entry_id": r["entry_id"],
+            "date": r["date"],
+            "description": r["description"],
+            "category": {"account_id": r["exp_id"], "code": r["exp_code"],
+                         "name": r["exp_name"], "type": r["exp_type"]} if r["exp_id"] else None,
+            "paid_from": {"account_id": r["src_id"], "code": r["src_code"],
+                          "name": r["src_name"], "type": r["src_type"]} if r["src_id"] else None,
+            "amount": round(float(r["amount"]), 2),
+            "created_by": r["created_by"],
+        })
+    return entries

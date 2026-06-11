@@ -1005,5 +1005,50 @@ def pl_report():
                            credit_outstanding=credit_outstanding)
 
 
+# ── Accounting: Expenses ─────────────────────────────────────────────
+
+@app.route("/accounting/expenses", methods=["GET", "POST"])
+@login_required
+def expenses():
+    # Categories = expense accounts, excluding auto-posted COGS (5000)
+    expense_accounts = [a for a in excel_db.get_accounts_by_type("expense")
+                        if str(a["code"]) != "5000"]
+    # Paid-from = Cash / Bank
+    pay_accounts = [a for a in excel_db.get_accounts_by_type("asset")
+                    if str(a["code"]) in ("1000", "1010")]
+
+    if request.method == "POST":
+        try:
+            excel_db.record_expense(
+                int(request.form["expense_account_id"]),
+                request.form.get("amount", ""),
+                int(request.form["paid_from_account_id"]),
+                request.form.get("description", ""),
+                created_by=current_user.username,
+            )
+            flash("Expense recorded.", "success")
+        except (ValueError, KeyError) as e:
+            flash(str(e) or "Invalid expense.", "danger")
+        return redirect(url_for("expenses"))
+
+    today = date.today()
+    start_str = request.args.get("start", today.replace(day=1).isoformat())
+    end_str = request.args.get("end", today.isoformat())
+    try:
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = today.replace(day=1)
+        end_date = today
+
+    items = excel_db.get_expense_entries(start_date, end_date)
+    total = round(sum(e["amount"] for e in items), 2)
+    return render_template("expenses.html",
+                           expense_accounts=expense_accounts,
+                           pay_accounts=pay_accounts,
+                           items=items, total=total,
+                           start_date=start_date, end_date=end_date)
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

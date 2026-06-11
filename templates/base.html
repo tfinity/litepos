@@ -149,6 +149,11 @@
                         <i class="bi bi-bag-plus"></i> Purchases
                     </a>
 
+                    <div class="nav-section">Accounting</div>
+                    <a class="nav-link {{ 'active' if request.endpoint == 'expenses' }}" href="{{ url_for('expenses') }}">
+                        <i class="bi bi-cash-stack"></i> Expenses
+                    </a>
+
                     <div class="nav-section">Reports</div>
                     <a class="nav-link {{ 'active' if request.endpoint == 'pl_report' }}" href="{{ url_for('pl_report') }}">
                         <i class="bi bi-graph-up-arrow"></i> P&amp;L (Sales)

@@ -2025,3 +2025,85 @@ def get_trial_balance():
         total_credit += c
     rows.sort(key=lambda r: str(r["account"]["code"]))
     return rows, {"debit": round(total_debit, 2), "credit": round(total_credit, 2)}
+
+
+# ── Expenses (built on the journal) ──────────────────────────────────
+
+def record_expense(expense_account_id, amount, paid_from_account_id,
+                   description="", created_by="system", entry_date=None):
+    """Record an operating expense paid from a cash/bank account.
+    Posts: Dr Expense, Cr Cash/Bank."""
+    amount = round(float(amount), 2)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    exp = get_account(int(expense_account_id))
+    if not exp or exp["type"] != "expense":
+        raise ValueError("Select a valid expense category.")
+    src = get_account(int(paid_from_account_id))
+    if not src or src["type"] != "asset":
+        raise ValueError("Select a valid account to pay from (Cash/Bank).")
+    desc = (description or "").strip() or f"Expense: {exp['name']}"
+    return post_journal(
+        desc,
+        [{"account_id": exp["account_id"], "debit": amount},
+         {"account_id": src["account_id"], "credit": amount}],
+        source_type="expense", created_by=created_by, entry_date=entry_date)
+
+
+def get_expense_entries(start_date=None, end_date=None):
+    """List expense journal entries with amount, category, and paid-from account."""
+    accounts = {a["account_id"]: a for a in get_all_accounts()}
+    entries = []
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            return []
+        je = {}
+        for row in wb["JournalEntries"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_HEADERS, row)
+            if d.get("source_type") != "expense":
+                continue
+            je[int(d["entry_id"])] = d
+        lines_by_entry = {}
+        for row in wb["JournalLines"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_LINE_HEADERS, row)
+            eid = int(d["entry_id"])
+            if eid in je:
+                lines_by_entry.setdefault(eid, []).append(d)
+        wb.close()
+
+    for eid, entry in je.items():
+        exp_acct = None
+        src_acct = None
+        amount = 0.0
+        for ln in lines_by_entry.get(eid, []):
+            aid = int(ln["account_id"])
+            debit = float(ln["debit"] or 0)
+            credit = float(ln["credit"] or 0)
+            if debit > 0:
+                exp_acct = accounts.get(aid)
+                amount = debit
+            elif credit > 0:
+                src_acct = accounts.get(aid)
+        edate = entry.get("date")
+        edd = edate.date() if isinstance(edate, datetime) else edate
+        if start_date and edd and edd < start_date:
+            continue
+        if end_date and edd and edd > end_date:
+            continue
+        entries.append({
+            "entry_id": eid,
+            "date": edate,
+            "description": entry.get("description"),
+            "category": exp_acct,
+            "paid_from": src_acct,
+            "amount": round(amount, 2),
+            "created_by": entry.get("created_by"),
+        })
+    entries.sort(key=lambda x: x["entry_id"], reverse=True)
+    return entries
