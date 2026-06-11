@@ -1119,6 +1119,59 @@ def cash_flow():
                            cash_in=cash_in, cash_out=cash_out, net=net)
 
 
+@app.route("/accounting/opening-balances", methods=["GET", "POST"])
+@login_required
+def opening_balances():
+    if request.method == "POST":
+        start = request.form.get("start_date", "").strip()
+        try:
+            start_date = date.fromisoformat(start)
+        except ValueError:
+            flash("Enter a valid start date.", "danger")
+            return redirect(url_for("opening_balances"))
+
+        def amt(field):
+            try:
+                return float(request.form.get(field, "") or 0)
+            except ValueError:
+                return 0.0
+
+        balances = {
+            "1000": amt("cash"),
+            "1010": amt("bank"),
+            "1200": amt("inventory"),
+            "1100": amt("receivable"),
+            "2000": amt("payable"),
+        }
+        try:
+            excel_db.set_opening_balances(start_date, balances,
+                                          created_by=current_user.username)
+            flash("Opening balances saved. The Balance Sheet now starts from "
+                  f"{start_date.isoformat()}.", "success")
+        except ValueError as e:
+            flash(str(e), "danger")
+        return redirect(url_for("balance_sheet"))
+
+    existing = excel_db.get_opening_balances()
+    books_start = excel_db.get_books_start()
+    return render_template("opening_balances.html",
+                           existing=existing, books_start=books_start)
+
+
+@app.route("/accounting/balance-sheet")
+@login_required
+def balance_sheet():
+    # Bring the ledger up to date with any new sales/purchases/payments
+    try:
+        excel_db.sync_journal_from_operations()
+    except Exception as e:
+        app.logger.warning("journal sync failed: %s", e)
+    bs = excel_db.get_balance_sheet()
+    books_start = excel_db.get_books_start()
+    return render_template("balance_sheet.html", bs=bs, books_start=books_start,
+                           as_of=date.today())
+
+
 @app.route("/accounting/categories/add", methods=["POST"])
 @login_required
 def category_add():

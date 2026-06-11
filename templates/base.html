@@ -159,6 +159,12 @@
                     <a class="nav-link {{ 'active' if request.endpoint == 'cash_flow' }}" href="{{ url_for('cash_flow') }}">
                         <i class="bi bi-arrow-left-right"></i> Cash Flow
                     </a>
+                    <a class="nav-link {{ 'active' if request.endpoint == 'balance_sheet' }}" href="{{ url_for('balance_sheet') }}">
+                        <i class="bi bi-bank"></i> Balance Sheet
+                    </a>
+                    <a class="nav-link {{ 'active' if request.endpoint == 'opening_balances' }}" href="{{ url_for('opening_balances') }}">
+                        <i class="bi bi-flag"></i> Opening Balances
+                    </a>
 
                     <div class="nav-section">Reports</div>
                     <a class="nav-link {{ 'active' if request.endpoint == 'pl_report' }}" href="{{ url_for('pl_report') }}">

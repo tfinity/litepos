@@ -2147,3 +2147,326 @@ def get_expense_entries(start_date=None, end_date=None):
         })
     entries.sort(key=lambda x: x["entry_id"], reverse=True)
     return entries
+
+
+# ── Journal sync: post accounting entries from operational data ───────
+
+def _existing_journal_sources():
+    """Set of (source_type, str(source_id)) already posted to the journal."""
+    out = set()
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            return out
+        for row in wb["JournalEntries"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_HEADERS, row)
+            if d.get("source_id") is not None:
+                out.add((str(d.get("source_type")), str(int(d["source_id"]))))
+        wb.close()
+    return out
+
+
+def sync_journal_from_operations():
+    """Generate journal entries for sales, purchases, supplier payments and
+    customer payments that have not been posted yet. Idempotent. Returns count posted."""
+    acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
+    CASH, AR, INV, AP = acc["1000"], acc["1100"], acc["1200"], acc["2000"]
+    TAX, SALES, COGS = acc["2100"], acc["4000"], acc["5000"]
+    existing = _existing_journal_sources()
+    books_start = get_books_start()
+
+    def _after_start(val):
+        if books_start is None:
+            return True
+        d = val.date() if isinstance(val, datetime) else val
+        return d is None or d >= books_start
+
+    pending = []  # (date, description, source_type, source_id, [lines])
+
+    # Sales (active invoices only)
+    for inv in get_all_invoices():
+        sid = int(inv["invoice_id"])
+        if ("sale", str(sid)) in existing:
+            continue
+        if not _after_start(inv.get("created_at")):
+            continue
+        items = get_invoice_items(sid)
+        cogs = round(sum(float(it["purchase_price"] or 0) * int(it["quantity"] or 0)
+                         for it in items), 2)
+        net = round(float(inv.get("subtotal") or 0) - float(inv.get("discount_total") or 0), 2)
+        tax = round(float(inv.get("tax_amount") or 0), 2)
+        total = round(float(inv.get("total") or 0), 2)
+        is_credit = str(inv.get("payment_method") or "").strip().lower() == "credit"
+        lines = [
+            {"account_id": AR if is_credit else CASH, "debit": total},
+            {"account_id": SALES, "credit": net},
+        ]
+        if tax > 0:
+            lines.append({"account_id": TAX, "credit": tax})
+        if cogs > 0:
+            lines.append({"account_id": COGS, "debit": cogs})
+            lines.append({"account_id": INV, "credit": cogs})
+        pending.append((inv.get("created_at"), f"Sale INV-{sid}", "sale", sid, lines))
+
+    # Purchases (stock received) -> Dr Inventory, Cr Accounts Payable
+    for p in get_all_purchase_invoices():
+        pid = int(p["purchase_id"])
+        if ("purchase", str(pid)) in existing:
+            continue
+        if not _after_start(p.get("created_at")):
+            continue
+        total = round(float(p.get("total_amount") or 0), 2)
+        if total <= 0:
+            continue
+        pending.append((p.get("created_at"), f"Purchase PINV-{pid}", "purchase", pid,
+                        [{"account_id": INV, "debit": total},
+                         {"account_id": AP, "credit": total}]))
+
+    # Supplier payments -> Dr Accounts Payable, Cr Cash
+    for e in get_supplier_ledger_entries():
+        if e.get("type") != "credit":
+            continue
+        eid = int(e["entry_id"])
+        if ("supplier_payment", str(eid)) in existing:
+            continue
+        if not _after_start(e.get("created_at")):
+            continue
+        amt = round(float(e.get("amount") or 0), 2)
+        if amt <= 0:
+            continue
+        pending.append((e.get("created_at"), "Supplier payment", "supplier_payment", eid,
+                        [{"account_id": AP, "debit": amt},
+                         {"account_id": CASH, "credit": amt}]))
+
+    # Customer credit repayments -> Dr Cash, Cr Accounts Receivable
+    for e in get_credit_ledger():
+        if e.get("type") != "credit":
+            continue
+        eid = int(e["entry_id"])
+        if ("customer_payment", str(eid)) in existing:
+            continue
+        if not _after_start(e.get("created_at")):
+            continue
+        amt = round(float(e.get("amount") or 0), 2)
+        if amt <= 0:
+            continue
+        pending.append((e.get("created_at"), "Customer payment", "customer_payment", eid,
+                        [{"account_id": CASH, "debit": amt},
+                         {"account_id": AR, "credit": amt}]))
+
+    if not pending:
+        return 0
+
+    # Batch-append everything in one workbook open
+    with _lock:
+        wb = _open()
+        for sheet, headers in (("JournalEntries", JOURNAL_HEADERS),
+                               ("JournalLines", JOURNAL_LINE_HEADERS)):
+            if sheet not in wb.sheetnames:
+                wb.create_sheet(sheet).append(headers)
+        ws_je = wb["JournalEntries"]
+        ws_jl = wb["JournalLines"]
+        entry_id = _next_id(ws_je)
+        line_id = _next_id(ws_jl)
+        now = datetime.now()
+        for when, desc, stype, sid, lines in pending:
+            # safety: only post balanced entries
+            td = round(sum(float(l.get("debit", 0) or 0) for l in lines), 2)
+            tc = round(sum(float(l.get("credit", 0) or 0) for l in lines), 2)
+            if td != tc:
+                continue
+            ws_je.append([entry_id, when, desc, stype, sid, "system", now])
+            for l in lines:
+                ws_jl.append([line_id, entry_id, int(l["account_id"]),
+                              round(float(l.get("debit", 0) or 0), 2),
+                              round(float(l.get("credit", 0) or 0), 2)])
+                line_id += 1
+            entry_id += 1
+        _save(wb)
+        wb.close()
+    return len(pending)
+
+
+def get_balance_sheet():
+    """Balance sheet derived from the journal. Always balances because the
+    underlying ledger is double-entry. Returns dict of sections + totals."""
+    rows, _ = get_trial_balance()
+    sections = {"asset": [], "liability": [], "equity": []}
+    total = {"asset": 0.0, "liability": 0.0, "equity": 0.0}
+    income = 0.0
+    expense = 0.0
+    for r in rows:
+        atype = r["account"]["type"]
+        bal = r["balance"]
+        if atype in sections:
+            sections[atype].append({"name": r["account"]["name"], "balance": bal})
+            total[atype] += bal
+        elif atype == "income":
+            income += bal
+        elif atype == "expense":
+            expense += bal
+    net_income = round(income - expense, 2)
+    # Net income rolls into equity
+    equity_rows = list(sections["equity"])
+    equity_rows.append({"name": "Net Income (current)", "balance": net_income})
+    total_equity = round(total["equity"] + net_income, 2)
+    return {
+        "assets": sections["asset"],
+        "liabilities": sections["liability"],
+        "equity": equity_rows,
+        "total_assets": round(total["asset"], 2),
+        "total_liabilities": round(total["liability"], 2),
+        "total_equity": total_equity,
+        "total_liab_equity": round(total["liability"] + total_equity, 2),
+        "net_income": net_income,
+    }
+
+
+# ── Opening balances & books start date ──────────────────────────────
+
+def get_books_start():
+    """Date of the opening-balance entry, or None if not set."""
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            return None
+        result = None
+        for row in wb["JournalEntries"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_HEADERS, row)
+            if d.get("source_type") == "opening":
+                dt = d.get("date")
+                result = dt.date() if isinstance(dt, datetime) else dt
+                break
+        wb.close()
+    return result
+
+
+def get_opening_balances():
+    """Return the opening amounts keyed by account code, or {} if not set."""
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            return {}
+        opening_ids = set()
+        for row in wb["JournalEntries"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_HEADERS, row)
+            if d.get("source_type") == "opening":
+                opening_ids.add(int(d["entry_id"]))
+        by_acct = {}
+        if opening_ids and "JournalLines" in wb.sheetnames:
+            for row in wb["JournalLines"].iter_rows(min_row=2, values_only=True):
+                if row[0] is None:
+                    continue
+                d = _row_to_dict(JOURNAL_LINE_HEADERS, row)
+                if int(d["entry_id"]) in opening_ids:
+                    by_acct[int(d["account_id"])] = (
+                        float(d["debit"] or 0), float(d["credit"] or 0))
+        wb.close()
+    accts = {a["account_id"]: a for a in get_all_accounts()}
+    out = {}
+    for aid, (dr, cr) in by_acct.items():
+        acct = accts.get(aid)
+        if not acct:
+            continue
+        amount = dr if acct["type"] in _DEBIT_NORMAL_TYPES else cr
+        out[str(acct["code"])] = round(amount, 2)
+    return out
+
+
+_AUTO_SYNCED_SOURCES = ("sale", "purchase", "supplier_payment", "customer_payment")
+
+
+def _delete_opening_entries(wb, source_types=("opening",)):
+    """Remove journal entries (+ their lines) of the given source types."""
+    if "JournalEntries" not in wb.sheetnames:
+        return
+    ws_je = wb["JournalEntries"]
+    target_ids = set()
+    del_rows = []
+    for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+        if row[0].value is None:
+            continue
+        if row[3].value in source_types:  # source_type column
+            target_ids.add(int(row[0].value))
+            del_rows.append(idx)
+    for idx in sorted(del_rows, reverse=True):
+        ws_je.delete_rows(idx, 1)
+    if target_ids and "JournalLines" in wb.sheetnames:
+        ws_jl = wb["JournalLines"]
+        del_lines = []
+        for idx, row in enumerate(ws_jl.iter_rows(min_row=2), start=2):
+            if row[0].value is None:
+                continue
+            if int(row[1].value) in target_ids:  # entry_id column
+                del_lines.append(idx)
+        for idx in sorted(del_lines, reverse=True):
+            ws_jl.delete_rows(idx, 1)
+
+
+def set_opening_balances(start_date, balances, created_by="system"):
+    """Set/replace opening balances as of start_date.
+    balances: dict of account code -> amount, e.g. {'1000': cash, '1200': inventory, ...}.
+    Owner Capital (3000) is computed as the balancing figure."""
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+    acc = {str(a["code"]): a for a in get_all_accounts()}
+
+    total_assets = 0.0
+    total_liab = 0.0
+    lines = []
+    for code, amount in balances.items():
+        amount = round(float(amount or 0), 2)
+        if amount == 0:
+            continue
+        a = acc.get(str(code))
+        if not a or str(code) == "3000":
+            continue
+        if a["type"] in _DEBIT_NORMAL_TYPES:
+            lines.append({"account_id": a["account_id"], "debit": amount})
+            total_assets += amount
+        else:
+            lines.append({"account_id": a["account_id"], "credit": amount})
+            total_liab += amount
+
+    capital = round(total_assets - total_liab, 2)
+    cap_acct = acc["3000"]["account_id"]
+    if capital >= 0:
+        lines.append({"account_id": cap_acct, "credit": capital})
+    else:
+        lines.append({"account_id": cap_acct, "debit": -capital})
+
+    if len([l for l in lines if l.get("debit") or l.get("credit")]) < 2:
+        raise ValueError("Enter at least one opening balance.")
+
+    with _lock:
+        wb = _open()
+        for sheet, headers in (("JournalEntries", JOURNAL_HEADERS),
+                               ("JournalLines", JOURNAL_LINE_HEADERS)):
+            if sheet not in wb.sheetnames:
+                wb.create_sheet(sheet).append(headers)
+        # Replace opening entry and clear auto-synced operational entries so the
+        # next sync re-posts only transactions on/after the new start date.
+        _delete_opening_entries(wb, ("opening",) + _AUTO_SYNCED_SOURCES)
+        ws_je = wb["JournalEntries"]
+        ws_jl = wb["JournalLines"]
+        entry_id = _next_id(ws_je)
+        line_id = _next_id(ws_jl)
+        ws_je.append([entry_id, datetime.combine(start_date, datetime.min.time()),
+                      "Opening balances", "opening", None, created_by, datetime.now()])
+        for l in lines:
+            ws_jl.append([line_id, entry_id, int(l["account_id"]),
+                          round(float(l.get("debit", 0) or 0), 2),
+                          round(float(l.get("credit", 0) or 0), 2)])
+            line_id += 1
+        _save(wb)
+        wb.close()
+    return entry_id

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Opening Balances{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-flag"></i> Opening Balances</h2>
+
+<div class="row">
+    <div class="col-lg-7">
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i>
+            Set what the business owned and owed on the day you start keeping the books.
+            From this date forward, sales, purchases and payments flow into the accounts
+            automatically. <strong>Owner Capital is calculated for you</strong> as the
+            balancing figure.
+        </div>
+
+        {% if books_start %}
+        <div class="alert alert-secondary">
+            Books currently start on <strong>{{ books_start.isoformat() }}</strong>.
+            Saving again will replace the opening balances.
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <div class="card-body">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label class="form-label">Books start date <span class="text-danger">*</span></label>
+                        <input type="date" name="start_date" class="form-control" required
+                               value="{{ books_start.isoformat() if books_start else '' }}">
+                        <div class="form-text">Only transactions on/after this date post to the ledger.</div>
+                    </div>
+
+                    <h6 class="text-muted mt-4">Assets — what you own</h6>
+                    <div class="row g-2">
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Cash in hand ({{ currency }})</label>
+                            <input type="number" name="cash" class="form-control" step="0.01" min="0"
+                                   value="{{ existing.get('1000', '') }}">
+                        </div>
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Bank balance ({{ currency }})</label>
+                            <input type="number" name="bank" class="form-control" step="0.01" min="0"
+                                   value="{{ existing.get('1010', '') }}">
+                        </div>
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Stock value ({{ currency }})</label>
+                            <input type="number" name="inventory" class="form-control" step="0.01" min="0"
+                                   value="{{ existing.get('1200', '') }}">
+                            <div class="form-text">Total purchase cost of stock on hand.</div>
+                        </div>
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Owed by customers ({{ currency }})</label>
+                            <input type="number" name="receivable" class="form-control" step="0.01" min="0"
+                                   value="{{ existing.get('1100', '') }}">
+                        </div>
+                    </div>
+
+                    <h6 class="text-muted mt-3">Liabilities — what you owe</h6>
+                    <div class="row g-2">
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Owed to suppliers ({{ currency }})</label>
+                            <input type="number" name="payable" class="form-control" step="0.01" min="0"
+                                   value="{{ existing.get('2000', '') }}">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-dark mt-3">
+                        <i class="bi bi-check-circle"></i> Save Opening Balances
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

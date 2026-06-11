@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Balance Sheet{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-bank"></i> Balance Sheet</h2>
+    <a href="{{ url_for('opening_balances') }}" class="btn btn-sm btn-outline-dark">
+        <i class="bi bi-gear"></i> Opening Balances
+    </a>
+</div>
+
+{% if not books_start %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    No opening balances set yet — figures below include all history from the
+    beginning and may look off (e.g. negative stock).
+    <a href="{{ url_for('opening_balances') }}" class="alert-link">Set opening balances</a>
+    to anchor the books to a start date.
+</div>
+{% endif %}
+
+<div class="row justify-content-center">
+    <div class="col-lg-9">
+        <div class="card">
+            <div class="card-header text-center">
+                <strong>Balance Sheet</strong>
+                <div class="small text-muted">
+                    As of {{ as_of.strftime('%d %b %Y') }}
+                    {% if books_start %} · books since {{ books_start.strftime('%d %b %Y') }}{% endif %}
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <!-- Assets -->
+                    <div class="col-md-6 border-end">
+                        <h6 class="text-uppercase text-muted">Assets</h6>
+                        <table class="table table-sm">
+                            <tbody>
+                                {% for a in bs.assets %}
+                                <tr>
+                                    <td>{{ a.name }}</td>
+                                    <td class="text-end">{{ "{:,.2f}".format(a.balance) }}</td>
+                                </tr>
+                                {% else %}
+                                <tr><td colspan="2" class="text-muted">—</td></tr>
+                                {% endfor %}
+                            </tbody>
+                            <tfoot>
+                                <tr class="border-top fw-bold">
+                                    <td>Total Assets</td>
+                                    <td class="text-end">{{ currency }} {{ "{:,.2f}".format(bs.total_assets) }}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+
+                    <!-- Liabilities + Equity -->
+                    <div class="col-md-6">
+                        <h6 class="text-uppercase text-muted">Liabilities</h6>
+                        <table class="table table-sm mb-3">
+                            <tbody>
+                                {% for l in bs.liabilities %}
+                                <tr>
+                                    <td>{{ l.name }}</td>
+                                    <td class="text-end">{{ "{:,.2f}".format(l.balance) }}</td>
+                                </tr>
+                                {% else %}
+                                <tr><td colspan="2" class="text-muted">—</td></tr>
+                                {% endfor %}
+                            </tbody>
+                            <tfoot>
+                                <tr class="border-top fw-bold">
+                                    <td>Total Liabilities</td>
+                                    <td class="text-end">{{ "{:,.2f}".format(bs.total_liabilities) }}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+
+                        <h6 class="text-uppercase text-muted">Equity</h6>
+                        <table class="table table-sm">
+                            <tbody>
+                                {% for e in bs.equity %}
+                                <tr>
+                                    <td>{{ e.name }}</td>
+                                    <td class="text-end">{{ "{:,.2f}".format(e.balance) }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                            <tfoot>
+                                <tr class="border-top fw-bold">
+                                    <td>Total Equity</td>
+                                    <td class="text-end">{{ "{:,.2f}".format(bs.total_equity) }}</td>
+                                </tr>
+                                <tr class="border-top border-2 fw-bold">
+                                    <td>Liabilities + Equity</td>
+                                    <td class="text-end">{{ currency }} {{ "{:,.2f}".format(bs.total_liab_equity) }}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+
+                {% if bs.total_assets == bs.total_liab_equity %}
+                <div class="alert alert-success mb-0 text-center">
+                    <i class="bi bi-check-circle"></i> Balanced — Assets = Liabilities + Equity
+                </div>
+                {% else %}
+                <div class="alert alert-danger mb-0 text-center">
+                    Out of balance by {{ currency }} {{ "{:,.2f}".format(bs.total_assets - bs.total_liab_equity) }}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

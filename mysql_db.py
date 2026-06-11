@@ -1606,3 +1606,207 @@ def next_expense_code():
     while str(code) in existing:
         code += 10
     return str(code)
+
+
+# ── Opening balances, journal sync, balance sheet ────────────────────
+
+def get_books_start():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT date FROM journal_entries WHERE source_type='opening' LIMIT 1")
+            r = cur.fetchone()
+    if not r or not r.get("date"):
+        return None
+    d = r["date"]
+    return d.date() if isinstance(d, datetime) else d
+
+
+def get_opening_balances():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT a.code, a.type, jl.debit, jl.credit
+                FROM journal_entries je
+                JOIN journal_lines jl ON jl.entry_id = je.entry_id
+                JOIN accounts a ON a.account_id = jl.account_id
+                WHERE je.source_type = 'opening'
+            """)
+            raw = cur.fetchall()
+    out = {}
+    for r in raw:
+        amount = float(r["debit"]) if r["type"] in _DEBIT_NORMAL_TYPES else float(r["credit"])
+        out[str(r["code"])] = round(amount, 2)
+    return out
+
+
+def set_opening_balances(start_date, balances, created_by="system"):
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+    acc = {str(a["code"]): a for a in get_all_accounts()}
+    total_assets = 0.0
+    total_liab = 0.0
+    lines = []
+    for code, amount in balances.items():
+        amount = round(float(amount or 0), 2)
+        if amount == 0:
+            continue
+        a = acc.get(str(code))
+        if not a or str(code) == "3000":
+            continue
+        if a["type"] in _DEBIT_NORMAL_TYPES:
+            lines.append((a["account_id"], amount, 0.0))
+            total_assets += amount
+        else:
+            lines.append((a["account_id"], 0.0, amount))
+            total_liab += amount
+    capital = round(total_assets - total_liab, 2)
+    cap_id = acc["3000"]["account_id"]
+    if capital >= 0:
+        lines.append((cap_id, 0.0, capital))
+    else:
+        lines.append((cap_id, -capital, 0.0))
+    if len(lines) < 2:
+        raise ValueError("Enter at least one opening balance.")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            # Replace opening + clear auto-synced operational entries so the next
+            # sync re-posts only transactions on/after the new start date.
+            cur.execute("""DELETE FROM journal_entries
+                           WHERE source_type IN ('opening','sale','purchase',
+                                                 'supplier_payment','customer_payment')""")
+            cur.execute(
+                """INSERT INTO journal_entries (date, description, source_type, source_id, created_by)
+                   VALUES (%s,%s,'opening',NULL,%s)""",
+                (datetime.combine(start_date, datetime.min.time()), "Opening balances", created_by))
+            eid = cur.lastrowid
+            cur.executemany(
+                "INSERT INTO journal_lines (entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s)",
+                [(eid, aid, d, c) for aid, d, c in lines])
+            return eid
+
+
+def _existing_journal_sources():
+    out = set()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT source_type, source_id FROM journal_entries WHERE source_id IS NOT NULL")
+            for r in cur.fetchall():
+                out.add((str(r["source_type"]), str(int(r["source_id"]))))
+    return out
+
+
+def sync_journal_from_operations():
+    acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
+    CASH, AR, INV, AP = acc["1000"], acc["1100"], acc["1200"], acc["2000"]
+    TAX, SALES, COGS = acc["2100"], acc["4000"], acc["5000"]
+    existing = _existing_journal_sources()
+    books_start = get_books_start()
+
+    def _after_start(val):
+        if books_start is None:
+            return True
+        d = val.date() if isinstance(val, datetime) else val
+        return d is None or d >= books_start
+
+    pending = []
+    for inv in get_all_invoices():
+        sid = int(inv["invoice_id"])
+        if ("sale", str(sid)) in existing or not _after_start(inv.get("created_at")):
+            continue
+        items = get_invoice_items(sid)
+        cogs = round(sum(float(it["purchase_price"] or 0) * int(it["quantity"] or 0) for it in items), 2)
+        net = round(float(inv.get("subtotal") or 0) - float(inv.get("discount_total") or 0), 2)
+        tax = round(float(inv.get("tax_amount") or 0), 2)
+        total = round(float(inv.get("total") or 0), 2)
+        is_credit = str(inv.get("payment_method") or "").strip().lower() == "credit"
+        lines = [(AR if is_credit else CASH, total, 0.0), (SALES, 0.0, net)]
+        if tax > 0:
+            lines.append((TAX, 0.0, tax))
+        if cogs > 0:
+            lines.append((COGS, cogs, 0.0))
+            lines.append((INV, 0.0, cogs))
+        pending.append((inv.get("created_at"), f"Sale INV-{sid}", "sale", sid, lines))
+
+    for p in get_all_purchase_invoices():
+        pid = int(p["purchase_id"])
+        if ("purchase", str(pid)) in existing or not _after_start(p.get("created_at")):
+            continue
+        total = round(float(p.get("total_amount") or 0), 2)
+        if total <= 0:
+            continue
+        pending.append((p.get("created_at"), f"Purchase PINV-{pid}", "purchase", pid,
+                        [(INV, total, 0.0), (AP, 0.0, total)]))
+
+    for e in get_supplier_ledger_entries():
+        if e.get("type") != "credit":
+            continue
+        eid = int(e["entry_id"])
+        if ("supplier_payment", str(eid)) in existing or not _after_start(e.get("created_at")):
+            continue
+        amt = round(float(e.get("amount") or 0), 2)
+        if amt <= 0:
+            continue
+        pending.append((e.get("created_at"), "Supplier payment", "supplier_payment", eid,
+                        [(AP, amt, 0.0), (CASH, 0.0, amt)]))
+
+    for e in get_credit_ledger():
+        if e.get("type") != "credit":
+            continue
+        eid = int(e["entry_id"])
+        if ("customer_payment", str(eid)) in existing or not _after_start(e.get("created_at")):
+            continue
+        amt = round(float(e.get("amount") or 0), 2)
+        if amt <= 0:
+            continue
+        pending.append((e.get("created_at"), "Customer payment", "customer_payment", eid,
+                        [(CASH, amt, 0.0), (AR, 0.0, amt)]))
+
+    if not pending:
+        return 0
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for when, desc, stype, sid, lines in pending:
+                td = round(sum(d for _, d, _ in lines), 2)
+                tc = round(sum(c for _, _, c in lines), 2)
+                if td != tc:
+                    continue
+                cur.execute(
+                    """INSERT INTO journal_entries (date, description, source_type, source_id, created_by)
+                       VALUES (%s,%s,%s,%s,'system')""", (when, desc, stype, sid))
+                eid = cur.lastrowid
+                cur.executemany(
+                    "INSERT INTO journal_lines (entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s)",
+                    [(eid, aid, d, c) for aid, d, c in lines])
+    return len(pending)
+
+
+def get_balance_sheet():
+    rows, _ = get_trial_balance()
+    sections = {"asset": [], "liability": [], "equity": []}
+    total = {"asset": 0.0, "liability": 0.0, "equity": 0.0}
+    income = 0.0
+    expense = 0.0
+    for r in rows:
+        atype = r["account"]["type"]
+        bal = r["balance"]
+        if atype in sections:
+            sections[atype].append({"name": r["account"]["name"], "balance": bal})
+            total[atype] += bal
+        elif atype == "income":
+            income += bal
+        elif atype == "expense":
+            expense += bal
+    net_income = round(income - expense, 2)
+    equity_rows = list(sections["equity"])
+    equity_rows.append({"name": "Net Income (current)", "balance": net_income})
+    total_equity = round(total["equity"] + net_income, 2)
+    return {
+        "assets": sections["asset"],
+        "liabilities": sections["liability"],
+        "equity": equity_rows,
+        "total_assets": round(total["asset"], 2),
+        "total_liabilities": round(total["liability"], 2),
+        "total_equity": total_equity,
+        "total_liab_equity": round(total["liability"] + total_equity, 2),
+        "net_income": net_income,
+    }
