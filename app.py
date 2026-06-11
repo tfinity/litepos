@@ -1050,6 +1050,75 @@ def expenses():
                            start_date=start_date, end_date=end_date)
 
 
+def _as_date(val):
+    """Coerce a stored created_at (datetime/date/str) to a date, or None."""
+    from datetime import datetime as _dt
+    if val is None or val == "":
+        return None
+    if isinstance(val, _dt):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    try:
+        return _dt.fromisoformat(str(val)[:19]).date()
+    except ValueError:
+        return None
+
+
+@app.route("/accounting/cash-flow")
+@login_required
+def cash_flow():
+    today = date.today()
+    start_str = request.args.get("start", today.replace(day=1).isoformat())
+    end_str = request.args.get("end", today.isoformat())
+    try:
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = today.replace(day=1)
+        end_date = today
+
+    def in_range(d):
+        return d is not None and start_date <= d <= end_date
+
+    # Cash in — sales paid at point of sale (non-credit), excludes deleted
+    sales_cash = 0.0
+    for inv in excel_db.get_all_invoices():
+        if str(inv.get("payment_method") or "").strip().lower() == "credit":
+            continue
+        if in_range(_as_date(inv.get("created_at"))):
+            sales_cash += float(inv.get("total") or 0)
+    sales_cash = round(sales_cash, 2)
+
+    # Cash in — customer credit repayments
+    customer_payments = 0.0
+    for e in excel_db.get_credit_ledger():
+        if e.get("type") == "credit" and in_range(_as_date(e.get("created_at"))):
+            customer_payments += float(e.get("amount") or 0)
+    customer_payments = round(customer_payments, 2)
+
+    # Cash out — payments to suppliers
+    supplier_payments = 0.0
+    for e in excel_db.get_supplier_ledger_entries():
+        if e.get("type") == "credit" and in_range(_as_date(e.get("created_at"))):
+            supplier_payments += float(e.get("amount") or 0)
+    supplier_payments = round(supplier_payments, 2)
+
+    # Cash out — operating expenses
+    expenses_total = round(sum(e["amount"] for e in
+                              excel_db.get_expense_entries(start_date, end_date)), 2)
+
+    cash_in = round(sales_cash + customer_payments, 2)
+    cash_out = round(supplier_payments + expenses_total, 2)
+    net = round(cash_in - cash_out, 2)
+
+    return render_template("cash_flow.html",
+                           start_date=start_date, end_date=end_date,
+                           sales_cash=sales_cash, customer_payments=customer_payments,
+                           supplier_payments=supplier_payments, expenses_total=expenses_total,
+                           cash_in=cash_in, cash_out=cash_out, net=net)
+
+
 @app.route("/accounting/income-statement")
 @login_required
 def income_statement():
