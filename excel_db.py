@@ -80,6 +80,13 @@ JOURNAL_LINE_HEADERS = [
     "line_id", "entry_id", "account_id", "debit", "credit",
 ]
 
+PARTNER_HEADERS = [
+    "partner_id", "name", "share_pct", "is_active", "created_at",
+]
+PARTNER_TXN_HEADERS = [
+    "txn_id", "partner_id", "type", "amount", "note", "date", "created_at",
+]
+
 # Account types: asset, liability, equity, income, expense
 # Normal balance: assets & expenses are debit-normal; the rest credit-normal.
 CHART_OF_ACCOUNTS = [
@@ -147,6 +154,10 @@ def init_workbook():
         ws12.append(JOURNAL_HEADERS)
         ws13 = wb.create_sheet("JournalLines")
         ws13.append(JOURNAL_LINE_HEADERS)
+        ws14 = wb.create_sheet("Partners")
+        ws14.append(PARTNER_HEADERS)
+        ws15 = wb.create_sheet("PartnerTransactions")
+        ws15.append(PARTNER_TXN_HEADERS)
         _save(wb)
         wb.close()
     ensure_workbook_schema()
@@ -198,6 +209,12 @@ def ensure_workbook_schema():
             changed = True
         if "JournalLines" not in wb.sheetnames:
             wb.create_sheet("JournalLines").append(JOURNAL_LINE_HEADERS)
+            changed = True
+        if "Partners" not in wb.sheetnames:
+            wb.create_sheet("Partners").append(PARTNER_HEADERS)
+            changed = True
+        if "PartnerTransactions" not in wb.sheetnames:
+            wb.create_sheet("PartnerTransactions").append(PARTNER_TXN_HEADERS)
             changed = True
         # Add last_supplier_id column to Products if missing
         ws_prod = wb["Products"]
@@ -2470,3 +2487,183 @@ def set_opening_balances(start_date, balances, created_by="system"):
         _save(wb)
         wb.close()
     return entry_id
+
+
+# ── Partners / investor equity ───────────────────────────────────────
+
+def get_all_partners(include_inactive=False):
+    with _lock:
+        wb = _open()
+        if "Partners" not in wb.sheetnames:
+            wb.close()
+            return []
+        rows = []
+        for row in wb["Partners"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            p = _row_to_dict(PARTNER_HEADERS, row)
+            p["partner_id"] = int(p["partner_id"])
+            p["share_pct"] = float(p["share_pct"] or 0)
+            p["is_active"] = bool(p["is_active"])
+            if not include_inactive and not p["is_active"]:
+                continue
+            rows.append(p)
+        wb.close()
+    rows.sort(key=lambda x: x["partner_id"])
+    return rows
+
+
+def get_partner(partner_id):
+    pid = int(partner_id)
+    for p in get_all_partners(include_inactive=True):
+        if p["partner_id"] == pid:
+            return p
+    return None
+
+
+def add_partner(name, share_pct):
+    name = str(name).strip()
+    if not name:
+        raise ValueError("Partner name is required.")
+    share = round(float(share_pct or 0), 2)
+    if share < 0 or share > 100:
+        raise ValueError("Share % must be between 0 and 100.")
+    with _lock:
+        wb = _open()
+        if "Partners" not in wb.sheetnames:
+            wb.create_sheet("Partners").append(PARTNER_HEADERS)
+        ws = wb["Partners"]
+        pid = _next_id(ws)
+        ws.append([pid, name, share, True, datetime.now()])
+        _save(wb)
+        wb.close()
+    return pid
+
+
+def update_partner(partner_id, name, share_pct, is_active=True):
+    pid = int(partner_id)
+    name = str(name).strip()
+    if not name:
+        raise ValueError("Partner name is required.")
+    share = round(float(share_pct or 0), 2)
+    if share < 0 or share > 100:
+        raise ValueError("Share % must be between 0 and 100.")
+    with _lock:
+        wb = _open()
+        ws = wb["Partners"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == pid:
+                row[1].value = name
+                row[2].value = share
+                row[3].value = bool(is_active)
+                _save(wb)
+                wb.close()
+                return
+        wb.close()
+    raise ValueError("Partner not found.")
+
+
+def add_partner_transaction(partner_id, txn_type, amount, note="", txn_date=None,
+                            created_by="system"):
+    """Record a capital contribution or a drawing for a partner, and post the
+    matching journal entry. txn_type: 'capital' or 'drawing'."""
+    pid = int(partner_id)
+    if txn_type not in ("capital", "drawing"):
+        raise ValueError("Type must be 'capital' or 'drawing'.")
+    amount = round(float(amount or 0), 2)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    if not get_partner(pid):
+        raise ValueError("Partner not found.")
+    when = txn_date or date.today()
+    if isinstance(when, str):
+        when = date.fromisoformat(when)
+
+    with _lock:
+        wb = _open()
+        if "PartnerTransactions" not in wb.sheetnames:
+            wb.create_sheet("PartnerTransactions").append(PARTNER_TXN_HEADERS)
+        ws = wb["PartnerTransactions"]
+        txn_id = _next_id(ws)
+        ws.append([txn_id, pid, txn_type, amount, (note or "").strip(),
+                   datetime.combine(when, datetime.min.time()), datetime.now()])
+        _save(wb)
+        wb.close()
+
+    acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
+    if txn_type == "capital":
+        lines = [{"account_id": acc["1000"], "debit": amount},
+                 {"account_id": acc["3000"], "credit": amount}]
+        desc = "Partner capital contribution"
+        stype = "partner_capital"
+    else:
+        lines = [{"account_id": acc["3100"], "debit": amount},
+                 {"account_id": acc["1000"], "credit": amount}]
+        desc = "Partner drawing"
+        stype = "partner_drawing"
+    post_journal(desc, lines, source_type=stype, source_id=txn_id,
+                 created_by=created_by,
+                 entry_date=datetime.combine(when, datetime.min.time()))
+    return txn_id
+
+
+def get_partner_transactions(partner_id=None):
+    pid = int(partner_id) if partner_id is not None else None
+    with _lock:
+        wb = _open()
+        if "PartnerTransactions" not in wb.sheetnames:
+            wb.close()
+            return []
+        rows = []
+        for row in wb["PartnerTransactions"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            t = _row_to_dict(PARTNER_TXN_HEADERS, row)
+            if pid is not None and int(t["partner_id"]) != pid:
+                continue
+            rows.append(t)
+        wb.close()
+    rows.sort(key=lambda x: int(x["txn_id"]), reverse=True)
+    return rows
+
+
+def get_partner_equity():
+    """Per-partner equity = capital contributed + share of net profit - drawings.
+    Net profit (since books start) is taken from the balance sheet and split by share %."""
+    partners = get_all_partners()
+    net_income = get_balance_sheet()["net_income"]
+    txns = get_partner_transactions()
+    cap_by = {}
+    draw_by = {}
+    for t in txns:
+        p = int(t["partner_id"])
+        amt = float(t["amount"] or 0)
+        if t["type"] == "capital":
+            cap_by[p] = cap_by.get(p, 0.0) + amt
+        elif t["type"] == "drawing":
+            draw_by[p] = draw_by.get(p, 0.0) + amt
+    rows = []
+    total_share = round(sum(p["share_pct"] for p in partners), 2)
+    for p in partners:
+        pid = p["partner_id"]
+        cap = round(cap_by.get(pid, 0.0), 2)
+        draw = round(draw_by.get(pid, 0.0), 2)
+        profit_share = round(net_income * (p["share_pct"] / 100.0), 2)
+        equity = round(cap + profit_share - draw, 2)
+        rows.append({
+            "partner": p,
+            "capital": cap,
+            "share_pct": p["share_pct"],
+            "profit_share": profit_share,
+            "drawings": draw,
+            "equity": equity,
+        })
+    totals = {
+        "capital": round(sum(r["capital"] for r in rows), 2),
+        "profit_share": round(sum(r["profit_share"] for r in rows), 2),
+        "drawings": round(sum(r["drawings"] for r in rows), 2),
+        "equity": round(sum(r["equity"] for r in rows), 2),
+        "share_pct": total_share,
+        "net_income": net_income,
+    }
+    return rows, totals

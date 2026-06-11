@@ -1119,6 +1119,59 @@ def cash_flow():
                            cash_in=cash_in, cash_out=cash_out, net=net)
 
 
+@app.route("/accounting/partners")
+@login_required
+def partners():
+    excel_db.sync_journal_from_operations()
+    rows, totals = excel_db.get_partner_equity()
+    bs = excel_db.get_balance_sheet()
+    unallocated = round(bs["total_equity"] - totals["equity"], 2)
+    return render_template("partners.html", rows=rows, totals=totals,
+                           unallocated=unallocated, bs_equity=bs["total_equity"],
+                           today_iso=date.today().isoformat())
+
+
+@app.route("/accounting/partners/add", methods=["POST"])
+@login_required
+def partner_add():
+    try:
+        excel_db.add_partner(request.form.get("name", ""),
+                             request.form.get("share_pct", 0))
+        flash("Partner added.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("partners"))
+
+
+@app.route("/accounting/partners/<int:partner_id>/edit", methods=["POST"])
+@login_required
+def partner_edit(partner_id):
+    try:
+        excel_db.update_partner(partner_id, request.form.get("name", ""),
+                                request.form.get("share_pct", 0),
+                                is_active=bool(request.form.get("is_active")))
+        flash("Partner updated.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("partners"))
+
+
+@app.route("/accounting/partners/<int:partner_id>/txn", methods=["POST"])
+@login_required
+def partner_txn(partner_id):
+    txn_type = request.form.get("type", "")
+    try:
+        excel_db.add_partner_transaction(
+            partner_id, txn_type, request.form.get("amount", 0),
+            note=request.form.get("note", ""),
+            txn_date=request.form.get("date") or None,
+            created_by=current_user.username)
+        flash(f"{'Capital' if txn_type == 'capital' else 'Drawing'} recorded.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("partners"))
+
+
 @app.route("/accounting/opening-balances", methods=["GET", "POST"])
 @login_required
 def opening_balances():

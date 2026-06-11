@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Partners & Equity{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h2 class="mb-0"><i class="bi bi-people-fill"></i> Partners & Equity</h2>
+    <button class="btn btn-dark" data-bs-toggle="modal" data-bs-target="#addPartnerModal">
+        <i class="bi bi-person-plus"></i> Add Partner
+    </button>
+</div>
+
+{% if totals.share_pct != 100 and rows %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    Profit shares add up to <strong>{{ totals.share_pct }}%</strong> — they should total 100%.
+</div>
+{% endif %}
+
+<div class="alert alert-secondary">
+    Net profit since books start: <strong>{{ currency }} {{ "{:,.2f}".format(totals.net_income) }}</strong>,
+    split by each partner's share %.
+</div>
+
+<div class="card mb-3">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-dark">
+                <tr>
+                    <th>Partner</th>
+                    <th class="text-end">Capital In</th>
+                    <th class="text-end">Share %</th>
+                    <th class="text-end">Profit Share</th>
+                    <th class="text-end">Drawings</th>
+                    <th class="text-end">Equity</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rows %}
+                <tr>
+                    <td>
+                        {{ r.partner.name }}
+                        {% if not r.partner.is_active %}<span class="badge bg-secondary">inactive</span>{% endif %}
+                    </td>
+                    <td class="text-end">{{ "{:,.2f}".format(r.capital) }}</td>
+                    <td class="text-end">{{ "{:.1f}".format(r.share_pct) }}%</td>
+                    <td class="text-end {{ 'text-success' if r.profit_share >= 0 else 'text-danger' }}">
+                        {{ "{:,.2f}".format(r.profit_share) }}
+                    </td>
+                    <td class="text-end text-danger">{{ "{:,.2f}".format(r.drawings) }}</td>
+                    <td class="text-end fw-bold">{{ currency }} {{ "{:,.2f}".format(r.equity) }}</td>
+                    <td class="text-end">
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-success" data-bs-toggle="modal"
+                                    data-bs-target="#txnModal"
+                                    data-pid="{{ r.partner.partner_id }}" data-name="{{ r.partner.name }}"
+                                    data-type="capital">+ Capital</button>
+                            <button class="btn btn-outline-danger" data-bs-toggle="modal"
+                                    data-bs-target="#txnModal"
+                                    data-pid="{{ r.partner.partner_id }}" data-name="{{ r.partner.name }}"
+                                    data-type="drawing">− Drawing</button>
+                            <button class="btn btn-outline-secondary" data-bs-toggle="modal"
+                                    data-bs-target="#editPartnerModal"
+                                    data-pid="{{ r.partner.partner_id }}" data-name="{{ r.partner.name }}"
+                                    data-share="{{ r.share_pct }}" data-active="{{ 1 if r.partner.is_active else 0 }}">
+                                <i class="bi bi-pencil"></i></button>
+                        </div>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" class="text-center text-muted py-4">No partners yet. Add one to start.</td></tr>
+                {% endfor %}
+            </tbody>
+            {% if rows %}
+            <tfoot class="table-light fw-bold">
+                <tr>
+                    <td>Total</td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.capital) }}</td>
+                    <td class="text-end">{{ "{:.1f}".format(totals.share_pct) }}%</td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.profit_share) }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.drawings) }}</td>
+                    <td class="text-end">{{ currency }} {{ "{:,.2f}".format(totals.equity) }}</td>
+                    <td></td>
+                </tr>
+            </tfoot>
+            {% endif %}
+        </table>
+    </div>
+</div>
+
+{% if unallocated != 0 %}
+<div class="alert alert-info small">
+    <i class="bi bi-info-circle"></i>
+    Balance-sheet total equity is {{ currency }} {{ "{:,.2f}".format(bs_equity) }}.
+    The difference of <strong>{{ currency }} {{ "{:,.2f}".format(unallocated) }}</strong> is
+    capital from <strong>opening balances</strong> not yet assigned to a partner. Record it as a
+    partner capital contribution if you want it reflected per-partner.
+</div>
+{% endif %}
+
+<!-- Add Partner -->
+<div class="modal fade" id="addPartnerModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <form method="POST" action="{{ url_for('partner_add') }}">
+            <div class="modal-header"><h5 class="modal-title">Add Partner</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <div class="mb-3"><label class="form-label">Name <span class="text-danger">*</span></label>
+                    <input type="text" name="name" class="form-control" required></div>
+                <div class="mb-0"><label class="form-label">Profit share %</label>
+                    <input type="number" name="share_pct" class="form-control" min="0" max="100" step="0.01" value="0"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-dark">Add</button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<!-- Edit Partner -->
+<div class="modal fade" id="editPartnerModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <form method="POST" id="editPartnerForm">
+            <div class="modal-header"><h5 class="modal-title">Edit Partner</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <div class="mb-3"><label class="form-label">Name</label>
+                    <input type="text" name="name" id="epName" class="form-control" required></div>
+                <div class="mb-3"><label class="form-label">Profit share %</label>
+                    <input type="number" name="share_pct" id="epShare" class="form-control" min="0" max="100" step="0.01"></div>
+                <div class="form-check"><input type="checkbox" name="is_active" id="epActive" class="form-check-input" value="1">
+                    <label class="form-check-label" for="epActive">Active</label></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-dark">Save</button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<!-- Capital / Drawing -->
+<div class="modal fade" id="txnModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content">
+        <form method="POST" id="txnForm">
+            <div class="modal-header"><h5 class="modal-title" id="txnTitle"></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <p class="mb-2">Partner: <strong id="txnPartnerName"></strong></p>
+                <input type="hidden" name="type" id="txnType">
+                <div class="mb-3"><label class="form-label">Amount ({{ currency }}) <span class="text-danger">*</span></label>
+                    <input type="number" name="amount" class="form-control" min="0.01" step="0.01" required></div>
+                <div class="mb-3"><label class="form-label">Date</label>
+                    <input type="date" name="date" class="form-control" value="{{ today_iso }}"></div>
+                <div class="mb-0"><label class="form-label">Note</label>
+                    <input type="text" name="note" class="form-control"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-dark">Save</button>
+            </div>
+        </form>
+    </div></div>
+</div>
+
+<script>
+document.getElementById('editPartnerModal').addEventListener('show.bs.modal', function(e){
+    const b = e.relatedTarget;
+    document.getElementById('epName').value = b.getAttribute('data-name');
+    document.getElementById('epShare').value = b.getAttribute('data-share');
+    document.getElementById('epActive').checked = b.getAttribute('data-active') === '1';
+    document.getElementById('editPartnerForm').action = '/accounting/partners/' + b.getAttribute('data-pid') + '/edit';
+});
+document.getElementById('txnModal').addEventListener('show.bs.modal', function(e){
+    const b = e.relatedTarget;
+    const type = b.getAttribute('data-type');
+    document.getElementById('txnType').value = type;
+    document.getElementById('txnPartnerName').textContent = b.getAttribute('data-name');
+    document.getElementById('txnTitle').textContent = (type === 'capital' ? 'Add Capital' : 'Record Drawing');
+    document.getElementById('txnForm').action = '/accounting/partners/' + b.getAttribute('data-pid') + '/txn';
+});
+</script>
+{% endblock %}

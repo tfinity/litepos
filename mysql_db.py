@@ -232,6 +232,27 @@ def init_workbook():
                     FOREIGN KEY (account_id) REFERENCES accounts(account_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS partners (
+                    partner_id INT AUTO_INCREMENT PRIMARY KEY,
+                    name       VARCHAR(255) NOT NULL,
+                    share_pct  DECIMAL(6,2) DEFAULT 0,
+                    is_active  TINYINT(1) DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS partner_transactions (
+                    txn_id     INT AUTO_INCREMENT PRIMARY KEY,
+                    partner_id INT NOT NULL,
+                    type       ENUM('capital','drawing') NOT NULL,
+                    amount     DECIMAL(14,2),
+                    note       TEXT,
+                    date       DATETIME,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (partner_id) REFERENCES partners(partner_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
     seed_chart_of_accounts()
 
 
@@ -1810,3 +1831,137 @@ def get_balance_sheet():
         "total_liab_equity": round(total["liability"] + total_equity, 2),
         "net_income": net_income,
     }
+
+
+# ── Partners / investor equity ───────────────────────────────────────
+
+def get_all_partners(include_inactive=False):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            if include_inactive:
+                cur.execute("SELECT * FROM partners ORDER BY partner_id")
+            else:
+                cur.execute("SELECT * FROM partners WHERE is_active = 1 ORDER BY partner_id")
+            rows = cur.fetchall()
+    for r in rows:
+        r["share_pct"] = float(r["share_pct"] or 0)
+        r["is_active"] = bool(r["is_active"])
+    return rows
+
+
+def get_partner(partner_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM partners WHERE partner_id = %s", (int(partner_id),))
+            r = cur.fetchone()
+    if r:
+        r["share_pct"] = float(r["share_pct"] or 0)
+        r["is_active"] = bool(r["is_active"])
+    return r
+
+
+def add_partner(name, share_pct):
+    name = str(name).strip()
+    if not name:
+        raise ValueError("Partner name is required.")
+    share = round(float(share_pct or 0), 2)
+    if share < 0 or share > 100:
+        raise ValueError("Share % must be between 0 and 100.")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO partners (name, share_pct, is_active) VALUES (%s,%s,1)",
+                        (name, share))
+            return cur.lastrowid
+
+
+def update_partner(partner_id, name, share_pct, is_active=True):
+    name = str(name).strip()
+    if not name:
+        raise ValueError("Partner name is required.")
+    share = round(float(share_pct or 0), 2)
+    if share < 0 or share > 100:
+        raise ValueError("Share % must be between 0 and 100.")
+    if not get_partner(partner_id):
+        raise ValueError("Partner not found.")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE partners SET name=%s, share_pct=%s, is_active=%s WHERE partner_id=%s",
+                        (name, share, 1 if is_active else 0, int(partner_id)))
+
+
+def add_partner_transaction(partner_id, txn_type, amount, note="", txn_date=None,
+                            created_by="system"):
+    pid = int(partner_id)
+    if txn_type not in ("capital", "drawing"):
+        raise ValueError("Type must be 'capital' or 'drawing'.")
+    amount = round(float(amount or 0), 2)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    if not get_partner(pid):
+        raise ValueError("Partner not found.")
+    when = txn_date or date.today()
+    if isinstance(when, str):
+        when = date.fromisoformat(when)
+    when_dt = datetime.combine(when, datetime.min.time())
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO partner_transactions (partner_id, type, amount, note, date)
+                   VALUES (%s,%s,%s,%s,%s)""",
+                (pid, txn_type, amount, (note or "").strip(), when_dt))
+            txn_id = cur.lastrowid
+    acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
+    if txn_type == "capital":
+        lines = [{"account_id": acc["1000"], "debit": amount},
+                 {"account_id": acc["3000"], "credit": amount}]
+        desc, stype = "Partner capital contribution", "partner_capital"
+    else:
+        lines = [{"account_id": acc["3100"], "debit": amount},
+                 {"account_id": acc["1000"], "credit": amount}]
+        desc, stype = "Partner drawing", "partner_drawing"
+    post_journal(desc, lines, source_type=stype, source_id=txn_id,
+                 created_by=created_by, entry_date=when_dt)
+    return txn_id
+
+
+def get_partner_transactions(partner_id=None):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            if partner_id is not None:
+                cur.execute("SELECT * FROM partner_transactions WHERE partner_id = %s ORDER BY txn_id DESC",
+                            (int(partner_id),))
+            else:
+                cur.execute("SELECT * FROM partner_transactions ORDER BY txn_id DESC")
+            return cur.fetchall()
+
+
+def get_partner_equity():
+    partners = get_all_partners()
+    net_income = get_balance_sheet()["net_income"]
+    txns = get_partner_transactions()
+    cap_by, draw_by = {}, {}
+    for t in txns:
+        p = int(t["partner_id"])
+        amt = float(t["amount"] or 0)
+        if t["type"] == "capital":
+            cap_by[p] = cap_by.get(p, 0.0) + amt
+        elif t["type"] == "drawing":
+            draw_by[p] = draw_by.get(p, 0.0) + amt
+    rows = []
+    for p in partners:
+        pid = p["partner_id"]
+        cap = round(cap_by.get(pid, 0.0), 2)
+        draw = round(draw_by.get(pid, 0.0), 2)
+        profit_share = round(net_income * (p["share_pct"] / 100.0), 2)
+        equity = round(cap + profit_share - draw, 2)
+        rows.append({"partner": p, "capital": cap, "share_pct": p["share_pct"],
+                     "profit_share": profit_share, "drawings": draw, "equity": equity})
+    totals = {
+        "capital": round(sum(r["capital"] for r in rows), 2),
+        "profit_share": round(sum(r["profit_share"] for r in rows), 2),
+        "drawings": round(sum(r["drawings"] for r in rows), 2),
+        "equity": round(sum(r["equity"] for r in rows), 2),
+        "share_pct": round(sum(p["share_pct"] for p in partners), 2),
+        "net_income": net_income,
+    }
+    return rows, totals
