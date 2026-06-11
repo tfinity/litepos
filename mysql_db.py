@@ -590,6 +590,26 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                 raise ValueError("Invoice not found")
             if inv.get("status") == "deleted":
                 raise ValueError("Invoice already deleted")
+
+            # Guard: deleting a credit sale the customer has already paid against
+            # would leave them overpaid (negative balance). Block it.
+            cid = normalize_customer_id(inv.get("customer_id"))
+            is_credit = str(inv.get("payment_method") or "").strip().lower() == "credit"
+            if is_credit and cid is not None:
+                cur.execute("""
+                    SELECT
+                        COALESCE(SUM(CASE WHEN type='debit'  THEN amount ELSE 0 END),0) AS debit,
+                        COALESCE(SUM(CASE WHEN type='credit' THEN amount ELSE 0 END),0) AS paid
+                    FROM credit_ledger WHERE customer_id = %s
+                """, (cid,))
+                bal = cur.fetchone()
+                inv_amount = float(inv.get("total") or 0)
+                if round((float(bal["debit"]) - inv_amount) - float(bal["paid"]), 2) < 0:
+                    raise ValueError(
+                        "This credit sale has payments against the customer's account. "
+                        "Deleting it would leave the customer overpaid. Record a refund or "
+                        "adjust their balance first, then delete.")
+
             # Reverse stock
             cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s", (iid,))
             for item in cur.fetchall():
@@ -597,11 +617,11 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                     "UPDATE products SET quantity = quantity + %s WHERE product_id = %s",
                     (int(item["quantity"]), int(item["product_id"]))
                 )
-            # Reverse credit ledger
+            # Remove the credit-sale debit for this invoice (payments have NULL invoice_id)
+            cur.execute("DELETE FROM credit_ledger WHERE invoice_id = %s AND type = 'debit'", (iid,))
+            # Remove the auto-synced journal entry for this sale (cascade clears lines)
             cur.execute(
-                "UPDATE credit_ledger SET entry_type = 'deleted' WHERE invoice_id = %s",
-                (iid,)
-            )
+                "DELETE FROM journal_entries WHERE source_type = 'sale' AND source_id = %s", (iid,))
             # Soft-delete
             from datetime import datetime as _dt
             cur.execute(
@@ -715,6 +735,13 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
             cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s", (iid,))
             old_items = cur.fetchall()
 
+            # Preserve original cost (COGS) per product so editing never rewrites
+            # historical cost with today's price.
+            old_cost_by_pid = {}
+            for old in old_items:
+                old_cost_by_pid.setdefault(int(old["product_id"]),
+                                           float(old.get("purchase_price") or 0))
+
             # Return stock from old items
             for old in old_items:
                 cur.execute(
@@ -754,7 +781,9 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                         f"requested {qty}, available {available}"
                     )
 
-                purchase_price = float(prod["purchase_price"])
+                # Keep original cost for products already on this invoice;
+                # use current cost only for newly added lines.
+                purchase_price = old_cost_by_pid.get(pid, float(prod["purchase_price"]))
                 catalog_counter = float(prod["counter_price"])
                 raw_unit = item.get("unit_price")
                 unit_price = float(raw_unit) if raw_unit not in (None, "") else catalog_counter

@@ -688,6 +688,28 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
             wb.close()
             raise ValueError("Invoice already deleted")
 
+        # Guard: deleting a credit sale that the customer has already paid
+        # against would leave them overpaid (negative balance). Block it.
+        cid = normalize_customer_id(inv.get("customer_id"))
+        is_credit = str(inv.get("payment_method") or "").strip().lower() == "credit"
+        if is_credit and cid is not None and ws_cl is not None:
+            total_debit = 0.0
+            total_paid = 0.0
+            for row in ws_cl.iter_rows(min_row=2, values_only=True):
+                if row[0] is None or normalize_customer_id(row[1]) != cid:
+                    continue
+                if row[3] == "debit":
+                    total_debit += float(row[4] or 0)
+                elif row[3] == "credit":
+                    total_paid += float(row[4] or 0)
+            inv_amount = float(inv.get("total") or 0)
+            if round((total_debit - inv_amount) - total_paid, 2) < 0:
+                wb.close()
+                raise ValueError(
+                    "This credit sale has payments against the customer's account. "
+                    "Deleting it would leave the customer overpaid. Record a refund or "
+                    "adjust their balance first, then delete.")
+
         # Build product row lookup
         product_rows = {}
         for row in ws_prod.iter_rows(min_row=2):
@@ -732,6 +754,28 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
             ws_inv.cell(row=inv_row_num, column=col_by).value = deleted_by
         if col_reason:
             ws_inv.cell(row=inv_row_num, column=col_reason).value = reason
+
+        # Remove the auto-synced journal entry for this sale so the deleted
+        # invoice drops out of the accounting reports too.
+        if "JournalEntries" in wb.sheetnames:
+            ws_je = wb["JournalEntries"]
+            del_eids = set()
+            del_je_rows = []
+            for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+                if row[0].value is None:
+                    continue
+                if row[3].value == "sale" and row[4].value is not None \
+                        and int(row[4].value) == iid:
+                    del_eids.add(int(row[0].value))
+                    del_je_rows.append(idx)
+            for idx in sorted(del_je_rows, reverse=True):
+                ws_je.delete_rows(idx, 1)
+            if del_eids and "JournalLines" in wb.sheetnames:
+                ws_jl = wb["JournalLines"]
+                del_jl_rows = [idx for idx, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                               if row[0].value is not None and int(row[1].value) in del_eids]
+                for idx in sorted(del_jl_rows, reverse=True):
+                    ws_jl.delete_rows(idx, 1)
 
         _save(wb)
         wb.close()
@@ -913,6 +957,13 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                 old_items.append(_row_to_dict(ITEM_HEADERS, [c.value for c in row]))
                 old_item_indices.append(idx)
 
+        # Preserve original cost (COGS) per product so editing an invoice never
+        # rewrites historical cost with today's price.
+        old_cost_by_pid = {}
+        for old in old_items:
+            old_cost_by_pid.setdefault(int(old["product_id"]),
+                                       float(old.get("purchase_price") or 0))
+
         # Build product row lookup
         product_rows = {}
         for row in ws_products.iter_rows(min_row=2):
@@ -948,7 +999,9 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                     f"requested {qty}, available {available}"
                 )
 
-            purchase_price = float(prow[2].value)
+            # Keep the original cost for products already on this invoice;
+            # use current cost only for newly added lines.
+            purchase_price = old_cost_by_pid.get(pid, float(prow[2].value))
             catalog_counter = float(prow[3].value)
             raw_unit = item.get("unit_price")
             unit_price = float(raw_unit) if raw_unit not in (None, "") else catalog_counter
