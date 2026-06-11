@@ -706,6 +706,24 @@ def api_customers_create():
     return jsonify({"customer": _customer_to_json(c)})
 
 
+@app.route("/api/suppliers", methods=["POST"])
+@login_required
+def api_suppliers_create():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name is required"}), 400
+    sid = excel_db.add_supplier({
+        "name": name,
+        "phone": data.get("phone", ""),
+        "email": data.get("email", ""),
+        "address": data.get("address", ""),
+        "notes": data.get("notes", ""),
+    })
+    s = excel_db.get_supplier(sid)
+    return jsonify({"supplier": {"supplier_id": s["supplier_id"], "name": s["name"]}})
+
+
 # ── Credit Ledger ─────────────────────────────────────────────────────
 
 @app.route("/credit-ledger")
