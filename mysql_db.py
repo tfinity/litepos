@@ -129,15 +129,33 @@ def init_workbook():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS tenants (
+                    tenant_id  INT AUTO_INCREMENT PRIMARY KEY,
+                    name       VARCHAR(255) NOT NULL,
+                    is_active  TINYINT(1) DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id       INT AUTO_INCREMENT PRIMARY KEY,
+                    tenant_id     INT,
                     username      VARCHAR(100) NOT NULL UNIQUE,
                     password_hash VARCHAR(255) NOT NULL,
-                    role          ENUM('admin','staff') DEFAULT 'staff',
+                    role          ENUM('super_admin','admin','staff') DEFAULT 'staff',
                     is_active     TINYINT(1) DEFAULT 1,
                     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            # Upgrade existing users table for multi-tenant
+            try:
+                cur.execute("ALTER TABLE users ADD COLUMN tenant_id INT")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE users MODIFY role ENUM('super_admin','admin','staff') DEFAULT 'staff'")
+            except Exception:
+                pass
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS credit_ledger (
                     entry_id    INT AUTO_INCREMENT PRIMARY KEY,
@@ -253,6 +271,23 @@ def init_workbook():
                     FOREIGN KEY (partner_id) REFERENCES partners(partner_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+
+            # Multi-tenant: every data table carries the owning tenant_id.
+            for _tbl in ("products", "customers", "invoices", "invoice_items",
+                         "credit_ledger", "suppliers", "purchase_invoices",
+                         "purchase_invoice_items", "supplier_ledger", "accounts",
+                         "journal_entries", "journal_lines", "partners",
+                         "partner_transactions"):
+                try:
+                    cur.execute(f"ALTER TABLE {_tbl} ADD COLUMN tenant_id INT")
+                except Exception:
+                    pass  # column already exists
+                try:
+                    cur.execute(f"CREATE INDEX idx_{_tbl}_tenant ON {_tbl} (tenant_id)")
+                except Exception:
+                    pass  # index already exists
+    # Chart of accounts is seeded per-tenant when a tenant is created (Phase C).
+    # Kept here for backward-compatibility with the existing single tenant.
     seed_chart_of_accounts()
 
 
@@ -1027,14 +1062,25 @@ def import_from_excel(filepath):
 
 # ── Users ─────────────────────────────────────────────────────────────
 
-def get_all_users():
+def get_all_users(tenant_id=None):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users ORDER BY user_id")
+            if tenant_id is not None:
+                cur.execute("SELECT * FROM users WHERE tenant_id = %s ORDER BY user_id",
+                            (int(tenant_id),))
+            else:
+                cur.execute("SELECT * FROM users ORDER BY user_id")
             rows = cur.fetchall()
     for u in rows:
         u["is_active"] = bool(u["is_active"])
     return rows
+
+
+def has_any_super_admin():
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM users WHERE role = 'super_admin'")
+            return cur.fetchone()["cnt"] > 0
 
 
 def get_user_by_id(user_id):
@@ -1064,14 +1110,57 @@ def has_any_users():
             return cur.fetchone()["cnt"] > 0
 
 
-def add_user(username, password_hash, role="staff"):
+def add_user(username, password_hash, role="staff", tenant_id=None):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO users (username, password_hash, role, is_active, created_at)
-                VALUES (%s, %s, %s, 1, %s)
-            """, (username.strip().lower(), password_hash, role, datetime.now()))
+                INSERT INTO users (tenant_id, username, password_hash, role, is_active, created_at)
+                VALUES (%s, %s, %s, %s, 1, %s)
+            """, (int(tenant_id) if tenant_id is not None else None,
+                  username.strip().lower(), password_hash, role, datetime.now()))
             return cur.lastrowid
+
+
+# ── Tenants (business accounts) ──────────────────────────────────────
+
+def create_tenant(name):
+    name = str(name).strip()
+    if not name:
+        raise ValueError("Business name is required.")
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO tenants (name, is_active) VALUES (%s, 1)", (name,))
+            return cur.lastrowid
+
+
+def get_all_tenants(include_inactive=True):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            if include_inactive:
+                cur.execute("SELECT * FROM tenants ORDER BY tenant_id")
+            else:
+                cur.execute("SELECT * FROM tenants WHERE is_active = 1 ORDER BY tenant_id")
+            rows = cur.fetchall()
+    for t in rows:
+        t["is_active"] = bool(t["is_active"])
+    return rows
+
+
+def get_tenant(tenant_id):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM tenants WHERE tenant_id = %s", (int(tenant_id),))
+            t = cur.fetchone()
+    if t:
+        t["is_active"] = bool(t["is_active"])
+    return t
+
+
+def set_tenant_active(tenant_id, active):
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE tenants SET is_active = %s WHERE tenant_id = %s",
+                        (1 if active else 0, int(tenant_id)))
 
 
 def update_user_password(user_id, password_hash):

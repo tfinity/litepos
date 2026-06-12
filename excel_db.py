@@ -1,4 +1,10 @@
-"""Excel-based data access layer for the POS system."""
+"""Excel-based data access layer for the POS system.
+
+Multi-tenant: each business account has its own workbook ``data_<tenant>.xlsx``;
+tenants and users live in a shared ``master.xlsx``. The active tenant comes from
+the per-request context (tenant.py). When no tenant is set, operations fall back
+to the legacy single-shop ``data.xlsx`` so older behaviour is preserved.
+"""
 
 import threading
 from datetime import datetime, date, timedelta
@@ -6,31 +12,77 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-DATA_FILE = Path(__file__).parent / "data.xlsx"
-_TMP_FILE = Path(__file__).parent / "data.tmp.xlsx"
-_BACKUP_DIR = Path(__file__).parent / "backups"
+from tenant import get_current_tenant
+
+_DATA_DIR = Path(__file__).parent
+DATA_FILE = _DATA_DIR / "data.xlsx"            # legacy / no-tenant fallback
+MASTER_FILE = _DATA_DIR / "master.xlsx"        # tenants + users registry
+_BACKUP_DIR = _DATA_DIR / "backups"
 _MAX_BACKUPS = 7
 _lock = threading.Lock()
 
 
-def _save(wb):
-    """Atomic save with rolling backup. Backs up current file before overwriting."""
-    # Backup existing file before replacing it
-    if DATA_FILE.exists():
+def _data_file():
+    """Path to the active tenant's workbook (or the legacy file when no tenant)."""
+    tid = get_current_tenant()
+    return _DATA_DIR / f"data_{tid}.xlsx" if tid is not None else DATA_FILE
+
+
+def _atomic_save(wb, path):
+    """Atomic save with rolling backup for the given workbook path."""
+    if path.exists():
         _BACKUP_DIR.mkdir(exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        backup_path = _BACKUP_DIR / f"data_{ts}.xlsx"
         import shutil
-        shutil.copy2(DATA_FILE, backup_path)
-        # Prune old backups, keep only the most recent _MAX_BACKUPS
-        backups = sorted(_BACKUP_DIR.glob("data_*.xlsx"))
+        shutil.copy2(path, _BACKUP_DIR / f"{path.stem}_{ts}.xlsx")
+        backups = sorted(_BACKUP_DIR.glob(f"{path.stem}_*.xlsx"))
         for old in backups[:-_MAX_BACKUPS]:
             old.unlink(missing_ok=True)
-    wb.save(_TMP_FILE)
+    tmp = path.with_suffix(".tmp.xlsx")
+    wb.save(tmp)
     # Windows doesn't allow replace() over an existing file — remove first
-    if DATA_FILE.exists():
-        DATA_FILE.unlink()
-    _TMP_FILE.replace(DATA_FILE)
+    if path.exists():
+        path.unlink()
+    tmp.replace(path)
+
+
+def _save(wb):
+    """Atomic save of the active tenant's workbook."""
+    _atomic_save(wb, _data_file())
+
+
+# ── Master registry (tenants + users), shared across all accounts ────
+
+def _open_master():
+    return load_workbook(MASTER_FILE)
+
+
+def _save_master(wb):
+    _atomic_save(wb, MASTER_FILE)
+
+
+def init_master():
+    """Ensure the master workbook (Tenants + Users sheets) exists."""
+    if not MASTER_FILE.exists():
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Tenants"
+        ws.append(TENANT_HEADERS)
+        wb.create_sheet("Users").append(USER_HEADERS)
+        _atomic_save(wb, MASTER_FILE)
+        return
+    # Migrate: ensure both sheets exist
+    wb = _open_master()
+    changed = False
+    if "Tenants" not in wb.sheetnames:
+        wb.create_sheet("Tenants").append(TENANT_HEADERS)
+        changed = True
+    if "Users" not in wb.sheetnames:
+        wb.create_sheet("Users").append(USER_HEADERS)
+        changed = True
+    if changed:
+        _atomic_save(wb, MASTER_FILE)
+    wb.close()
 
 PRODUCT_HEADERS = [
     "product_id", "name", "purchase_price", "counter_price", "retail_price",
@@ -54,7 +106,10 @@ CREDIT_LEDGER_HEADERS = [
     "entry_id", "customer_id", "invoice_id", "type", "amount", "note", "created_at",
 ]
 USER_HEADERS = [
-    "user_id", "username", "password_hash", "role", "is_active", "created_at",
+    "user_id", "tenant_id", "username", "password_hash", "role", "is_active", "created_at",
+]
+TENANT_HEADERS = [
+    "tenant_id", "name", "is_active", "created_at",
 ]
 SUPPLIER_HEADERS = [
     "supplier_id", "name", "phone", "email", "address", "notes", "created_at",
@@ -114,7 +169,7 @@ _DEBIT_NORMAL_TYPES = ("asset", "expense")
 def _is_valid_xlsx():
     from zipfile import BadZipFile
     try:
-        wb = load_workbook(DATA_FILE)
+        wb = load_workbook(_data_file())
         wb.close()
         return True
     except (BadZipFile, Exception):
@@ -122,10 +177,12 @@ def _is_valid_xlsx():
 
 
 def init_workbook():
-    """Create data.xlsx with header rows if it doesn't exist; migrate existing files."""
-    if DATA_FILE.exists() and not _is_valid_xlsx():
-        DATA_FILE.unlink()
-    if not DATA_FILE.exists():
+    """Create the active tenant's workbook with header rows if missing; migrate existing."""
+    init_master()
+    data_file = _data_file()
+    if data_file.exists() and not _is_valid_xlsx():
+        data_file.unlink()
+    if not data_file.exists():
         wb = Workbook()
         ws = wb.active
         ws.title = "Products"
@@ -166,7 +223,7 @@ def init_workbook():
 
 def ensure_workbook_schema():
     """Add Customers sheet and Invoices.customer_id column to legacy workbooks."""
-    if not DATA_FILE.exists():
+    if not _data_file().exists():
         return
     with _lock:
         wb = _open()
@@ -245,7 +302,7 @@ def normalize_customer_id(val):
 
 
 def _open():
-    return load_workbook(DATA_FILE)
+    return load_workbook(_data_file())
 
 
 def _next_id(ws):
@@ -1339,11 +1396,12 @@ def import_from_excel(filepath):
     return imported, skipped, errors
 
 
-# ── Users ─────────────────────────────────────────────────────────────
+# ── Users (stored in the shared master registry) ─────────────────────
 
-def get_all_users():
+def get_all_users(tenant_id=None):
+    init_master()
     with _lock:
-        wb = _open()
+        wb = _open_master()
         ws = wb["Users"]
         users = []
         for row in ws.iter_rows(min_row=2, values_only=True):
@@ -1351,7 +1409,10 @@ def get_all_users():
                 continue
             u = _row_to_dict(USER_HEADERS, row)
             u["user_id"] = int(u["user_id"])
+            u["tenant_id"] = int(u["tenant_id"]) if u.get("tenant_id") not in (None, "") else None
             u["is_active"] = bool(u["is_active"])
+            if tenant_id is not None and u["tenant_id"] != int(tenant_id):
+                continue
             users.append(u)
         wb.close()
     return users
@@ -1373,72 +1434,117 @@ def get_user_by_username(username):
 
 
 def has_any_users():
-    with _lock:
-        wb = _open()
-        ws = wb["Users"]
-        for row in ws.iter_rows(min_row=2, max_row=2, values_only=True):
-            wb.close()
-            return row[0] is not None
-        wb.close()
-    return False
+    return len(get_all_users()) > 0
 
 
-def add_user(username, password_hash, role="staff"):
+def has_any_super_admin():
+    return any(u.get("role") == "super_admin" for u in get_all_users())
+
+
+def add_user(username, password_hash, role="staff", tenant_id=None):
+    init_master()
     with _lock:
-        wb = _open()
+        wb = _open_master()
         ws = wb["Users"]
         uid = _next_id(ws)
-        ws.append([uid, username.strip().lower(), password_hash, role, 1, datetime.now()])
-        _save(wb)
+        ws.append([uid, int(tenant_id) if tenant_id is not None else None,
+                   username.strip().lower(), password_hash, role, 1, datetime.now()])
+        _save_master(wb)
         wb.close()
     return uid
 
 
-def update_user_password(user_id, password_hash):
+def _update_user_field(user_id, col_index, value):
     with _lock:
-        wb = _open()
+        wb = _open_master()
         ws = wb["Users"]
         for row in ws.iter_rows(min_row=2):
             if row[0].value is not None and int(row[0].value) == int(user_id):
-                row[2].value = password_hash
+                row[col_index].value = value
                 break
-        _save(wb)
+        _save_master(wb)
         wb.close()
+
+
+def update_user_password(user_id, password_hash):
+    _update_user_field(user_id, 3, password_hash)  # password_hash column
 
 
 def set_user_role(user_id, role):
-    with _lock:
-        wb = _open()
-        ws = wb["Users"]
-        for row in ws.iter_rows(min_row=2):
-            if row[0].value is not None and int(row[0].value) == int(user_id):
-                row[3].value = role
-                break
-        _save(wb)
-        wb.close()
+    _update_user_field(user_id, 4, role)  # role column
 
 
 def toggle_user_active(user_id):
-    with _lock:
-        wb = _open()
-        ws = wb["Users"]
-        for row in ws.iter_rows(min_row=2):
-            if row[0].value is not None and int(row[0].value) == int(user_id):
-                row[4].value = 0 if row[4].value else 1
-                break
-        _save(wb)
-        wb.close()
+    u = get_user_by_id(user_id)
+    _update_user_field(user_id, 5, 0 if (u and u["is_active"]) else 1)  # is_active column
 
 
 def delete_user(user_id):
     with _lock:
-        wb = _open()
+        wb = _open_master()
         ws = wb["Users"]
         for idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
             if row[0].value is not None and int(row[0].value) == int(user_id):
                 ws.delete_rows(idx)
                 break
-        _save(wb)
+        _save_master(wb)
+        wb.close()
+
+
+# ── Tenants (business accounts) ──────────────────────────────────────
+
+def create_tenant(name):
+    name = str(name).strip()
+    if not name:
+        raise ValueError("Business name is required.")
+    init_master()
+    with _lock:
+        wb = _open_master()
+        ws = wb["Tenants"]
+        tid = _next_id(ws)
+        ws.append([tid, name, 1, datetime.now()])
+        _save_master(wb)
+        wb.close()
+    return tid
+
+
+def get_all_tenants(include_inactive=True):
+    init_master()
+    with _lock:
+        wb = _open_master()
+        ws = wb["Tenants"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            t = _row_to_dict(TENANT_HEADERS, row)
+            t["tenant_id"] = int(t["tenant_id"])
+            t["is_active"] = bool(t["is_active"])
+            if not include_inactive and not t["is_active"]:
+                continue
+            rows.append(t)
+        wb.close()
+    rows.sort(key=lambda x: x["tenant_id"])
+    return rows
+
+
+def get_tenant(tenant_id):
+    tid = int(tenant_id)
+    for t in get_all_tenants():
+        if t["tenant_id"] == tid:
+            return t
+    return None
+
+
+def set_tenant_active(tenant_id, active):
+    with _lock:
+        wb = _open_master()
+        ws = wb["Tenants"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == int(tenant_id):
+                row[2].value = 1 if active else 0  # is_active column
+                break
+        _save_master(wb)
         wb.close()
 
 
