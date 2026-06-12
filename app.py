@@ -18,6 +18,7 @@ from flask_login import (
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import db as excel_db
+import tenant
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
@@ -45,11 +46,17 @@ class User(UserMixin):
         self.id = str(data["user_id"])
         self.username = data["username"]
         self.role = data["role"]
+        tid = data.get("tenant_id")
+        self.tenant_id = int(tid) if tid not in (None, "") else None
         self._is_active = bool(data.get("is_active", True))
 
     @property
     def is_active(self):
         return self._is_active
+
+    @property
+    def is_super_admin(self):
+        return self.role == "super_admin"
 
 
 @login_manager.user_loader
@@ -61,30 +68,54 @@ def load_user(user_id):
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not current_user.is_authenticated or current_user.role != "admin":
+        if not current_user.is_authenticated or current_user.role not in ("admin", "super_admin"):
             flash("Admin access required.", "danger")
             return redirect(url_for("dashboard"))
         return f(*args, **kwargs)
     return decorated
 
 
+def super_admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or not current_user.is_super_admin:
+            flash("Platform admin access required.", "danger")
+            return redirect(url_for("dashboard"))
+        return f(*args, **kwargs)
+    return decorated
+
+
 _PUBLIC_ENDPOINTS = {"login", "setup", "static"}
+# Endpoints a super-admin (no tenant) is allowed to use.
+_SUPERADMIN_ENDPOINTS = {"accounts", "account_create", "account_toggle", "logout"}
 
 
 @app.before_request
 def auth_gate():
     if request.endpoint in _PUBLIC_ENDPOINTS:
         return
-    if not excel_db.has_any_users():
+    if not excel_db.has_any_super_admin():
         return redirect(url_for("setup"))
     if not current_user.is_authenticated:
+        return redirect(url_for("login"))
+    # Scope every downstream data call to this user's tenant.
+    tenant.set_current_tenant(current_user.tenant_id)
+    # Super-admin has no shop data — confine them to platform screens.
+    if current_user.is_super_admin:
+        if request.endpoint not in _SUPERADMIN_ENDPOINTS:
+            return redirect(url_for("accounts"))
+    elif current_user.tenant_id is None:
+        # A non-super-admin with no tenant is misconfigured; block.
+        logout_user()
+        flash("Your account is not linked to a business. Contact the administrator.", "danger")
         return redirect(url_for("login"))
 
 
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
-    if excel_db.has_any_users():
-        return redirect(url_for("dashboard"))
+    """First-run: create the platform super-admin (who then provisions accounts)."""
+    if excel_db.has_any_super_admin():
+        return redirect(url_for("login"))
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
@@ -98,11 +129,13 @@ def setup():
         if len(password) < 6:
             flash("Password must be at least 6 characters.", "danger")
             return render_template("setup.html")
-        uid = excel_db.add_user(username, generate_password_hash(password), role="admin")
+        uid = excel_db.add_user(username, generate_password_hash(password),
+                                role="super_admin", tenant_id=None)
         u = excel_db.get_user_by_id(uid)
         login_user(User(u))
-        flash(f"Welcome, {username}! You are logged in as admin.", "success")
-        return redirect(url_for("dashboard"))
+        flash(f"Welcome, {username}! You are the platform admin. Create a business to begin.",
+              "success")
+        return redirect(url_for("accounts"))
     return render_template("setup.html")
 
 
@@ -115,7 +148,10 @@ def login():
         password = request.form.get("password", "")
         u = excel_db.get_user_by_username(username)
         if u and u.get("is_active") and check_password_hash(u["password_hash"], password):
-            login_user(User(u))
+            user = User(u)
+            login_user(user)
+            if user.is_super_admin:
+                return redirect(url_for("accounts"))
             return redirect(request.args.get("next") or url_for("dashboard"))
         flash("Invalid username or password.", "danger")
     return render_template("login.html")
@@ -127,11 +163,65 @@ def logout():
     return redirect(url_for("login"))
 
 
+# ── Platform: business accounts (super-admin only) ───────────────────
+
+@app.route("/accounts")
+@login_required
+@super_admin_required
+def accounts():
+    tenants = excel_db.get_all_tenants()
+    for t in tenants:
+        t["users"] = excel_db.get_all_users(tenant_id=t["tenant_id"])
+    return render_template("accounts.html", tenants=tenants)
+
+
+@app.route("/accounts/create", methods=["POST"])
+@login_required
+@super_admin_required
+def account_create():
+    name = request.form.get("name", "").strip()
+    admin_user = request.form.get("admin_username", "").strip()
+    admin_pass = request.form.get("admin_password", "")
+    if not name or not admin_user or not admin_pass:
+        flash("Business name, admin username and password are all required.", "danger")
+        return redirect(url_for("accounts"))
+    if len(admin_pass) < 6:
+        flash("Admin password must be at least 6 characters.", "danger")
+        return redirect(url_for("accounts"))
+    if excel_db.get_user_by_username(admin_user):
+        flash("That admin username is already taken.", "danger")
+        return redirect(url_for("accounts"))
+
+    tid = excel_db.create_tenant(name)
+    # Initialise the new business's data store (Excel: creates data_<id>.xlsx
+    # and its own chart of accounts).
+    tenant.set_current_tenant(tid)
+    try:
+        excel_db.init_workbook()
+    finally:
+        tenant.set_current_tenant(current_user.tenant_id)
+    excel_db.add_user(admin_user, generate_password_hash(admin_pass),
+                      role="admin", tenant_id=tid)
+    flash(f"Business '{name}' created with admin login '{admin_user}'.", "success")
+    return redirect(url_for("accounts"))
+
+
+@app.route("/accounts/<int:tenant_id>/toggle", methods=["POST"])
+@login_required
+@super_admin_required
+def account_toggle(tenant_id):
+    t = excel_db.get_tenant(tenant_id)
+    if t:
+        excel_db.set_tenant_active(tenant_id, not t["is_active"])
+        flash(f"Business '{t['name']}' {'disabled' if t['is_active'] else 'enabled'}.", "success")
+    return redirect(url_for("accounts"))
+
+
 @app.route("/users")
 @login_required
 @admin_required
 def users_list():
-    users = excel_db.get_all_users()
+    users = excel_db.get_all_users(tenant_id=current_user.tenant_id)
     return render_template("users.html", users=users)
 
 
@@ -151,7 +241,9 @@ def user_add():
     if excel_db.get_user_by_username(username):
         flash("Username already exists.", "danger")
         return redirect(url_for("users_list"))
-    excel_db.add_user(username, generate_password_hash(password), role=role)
+    role = role if role in ("admin", "staff") else "staff"
+    excel_db.add_user(username, generate_password_hash(password), role=role,
+                      tenant_id=current_user.tenant_id)
     flash(f"User '{username}' added.", "success")
     return redirect(url_for("users_list"))
 
