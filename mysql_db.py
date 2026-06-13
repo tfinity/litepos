@@ -8,6 +8,12 @@ import pymysql
 import pymysql.cursors
 
 from config import MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
+from tenant import get_current_tenant, require_tenant
+
+
+def _tid():
+    """Active tenant id for the current request; raises if none is set."""
+    return require_tenant()
 
 # Standard chart of accounts (code, name, type, is_system)
 CHART_OF_ACCOUNTS = [
@@ -286,9 +292,15 @@ def init_workbook():
                     cur.execute(f"CREATE INDEX idx_{_tbl}_tenant ON {_tbl} (tenant_id)")
                 except Exception:
                     pass  # index already exists
-    # Chart of accounts is seeded per-tenant when a tenant is created (Phase C).
-    # Kept here for backward-compatibility with the existing single tenant.
-    seed_chart_of_accounts()
+            # Chart-of-accounts code must be unique per tenant, not globally.
+            try:
+                cur.execute("ALTER TABLE accounts DROP INDEX code")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE accounts ADD UNIQUE KEY uniq_tenant_code (tenant_id, code)")
+            except Exception:
+                pass
 
 
 def normalize_customer_id(val):
@@ -318,7 +330,7 @@ def _normalize_date(val):
 def get_all_products():
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM products ORDER BY product_id")
+            cur.execute("SELECT * FROM products WHERE tenant_id = %s ORDER BY product_id", (_tid(),))
             rows = cur.fetchall()
     for p in rows:
         p["expiry_date"] = _normalize_date(p["expiry_date"])
@@ -328,7 +340,8 @@ def get_all_products():
 def get_product(product_id):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM products WHERE product_id = %s", (int(product_id),))
+            cur.execute("SELECT * FROM products WHERE product_id = %s AND tenant_id = %s",
+                        (int(product_id), _tid()))
             row = cur.fetchone()
     if row:
         row["expiry_date"] = _normalize_date(row["expiry_date"])
@@ -338,7 +351,8 @@ def get_product(product_id):
 def get_product_by_barcode(barcode):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM products WHERE barcode = %s", (str(barcode).strip(),))
+            cur.execute("SELECT * FROM products WHERE barcode = %s AND tenant_id = %s",
+                        (str(barcode).strip(), _tid()))
             row = cur.fetchone()
     if row:
         row["expiry_date"] = _normalize_date(row["expiry_date"])
@@ -355,9 +369,10 @@ def add_product(data):
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO products
-                    (name, purchase_price, counter_price, retail_price, quantity, barcode, expiry_date, category, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (tenant_id, name, purchase_price, counter_price, retail_price, quantity, barcode, expiry_date, category, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
+                _tid(),
                 data["name"],
                 float(data.get("purchase_price", 0)),
                 float(data.get("counter_price", 0)),
@@ -384,7 +399,7 @@ def update_product(product_id, data):
                     name = %s, purchase_price = %s, counter_price = %s,
                     retail_price = %s, quantity = %s, barcode = %s,
                     expiry_date = %s, category = %s
-                WHERE product_id = %s
+                WHERE product_id = %s AND tenant_id = %s
             """, (
                 data["name"],
                 float(data.get("purchase_price", 0)),
@@ -395,19 +410,22 @@ def update_product(product_id, data):
                 expiry,
                 data.get("category", ""),
                 int(product_id),
+                _tid(),
             ))
 
 
 def delete_product(product_id):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM products WHERE product_id = %s", (int(product_id),))
+            cur.execute("DELETE FROM products WHERE product_id = %s AND tenant_id = %s",
+                        (int(product_id), _tid()))
 
 
 def get_low_stock_products(threshold=10):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM products WHERE quantity <= %s ORDER BY quantity", (threshold,))
+            cur.execute("SELECT * FROM products WHERE tenant_id = %s AND quantity <= %s ORDER BY quantity",
+                        (_tid(), threshold))
             rows = cur.fetchall()
     for p in rows:
         p["expiry_date"] = _normalize_date(p["expiry_date"])
@@ -420,8 +438,9 @@ def get_expiry_products(days_ahead=30):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM products WHERE expiry_date IS NOT NULL AND expiry_date <= %s ORDER BY expiry_date",
-                (cutoff,)
+                "SELECT * FROM products WHERE tenant_id = %s AND expiry_date IS NOT NULL "
+                "AND expiry_date <= %s ORDER BY expiry_date",
+                (_tid(), cutoff)
             )
             rows = cur.fetchall()
     results = []
@@ -439,8 +458,8 @@ def search_products(query):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM products WHERE name LIKE %s OR barcode LIKE %s LIMIT 20",
-                (q, q)
+                "SELECT * FROM products WHERE tenant_id = %s AND (name LIKE %s OR barcode LIKE %s) LIMIT 20",
+                (_tid(), q, q)
             )
             rows = cur.fetchall()
     for p in rows:
@@ -453,7 +472,7 @@ def search_products(query):
 def get_all_customers():
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM customers ORDER BY customer_id")
+            cur.execute("SELECT * FROM customers WHERE tenant_id = %s ORDER BY customer_id", (_tid(),))
             return cur.fetchall()
 
 
@@ -463,7 +482,8 @@ def get_customer(customer_id):
         return None
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM customers WHERE customer_id = %s", (cid,))
+            cur.execute("SELECT * FROM customers WHERE customer_id = %s AND tenant_id = %s",
+                        (cid, _tid()))
             return cur.fetchone()
 
 
@@ -471,9 +491,10 @@ def add_customer(data):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO customers (name, phone, email, address, tax_id, notes, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO customers (tenant_id, name, phone, email, address, tax_id, notes, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (
+                _tid(),
                 (data.get("name") or "").strip(),
                 (data.get("phone") or "").strip(),
                 (data.get("email") or "").strip(),
@@ -495,7 +516,7 @@ def update_customer(customer_id, data):
                 UPDATE customers SET
                     name = %s, phone = %s, email = %s,
                     address = %s, tax_id = %s, notes = %s
-                WHERE customer_id = %s
+                WHERE customer_id = %s AND tenant_id = %s
             """, (
                 (data.get("name") or "").strip(),
                 (data.get("phone") or "").strip(),
@@ -504,6 +525,7 @@ def update_customer(customer_id, data):
                 (data.get("tax_id") or "").strip(),
                 (data.get("notes") or "").strip(),
                 cid,
+                _tid(),
             ))
 
 
@@ -513,10 +535,12 @@ def delete_customer(customer_id):
         return False
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS cnt FROM invoices WHERE customer_id = %s", (cid,))
+            cur.execute("SELECT COUNT(*) AS cnt FROM invoices WHERE customer_id = %s AND tenant_id = %s",
+                        (cid, _tid()))
             if cur.fetchone()["cnt"] > 0:
                 raise ValueError("Cannot delete customer: invoices reference this profile.")
-            cur.execute("DELETE FROM customers WHERE customer_id = %s", (cid,))
+            cur.execute("DELETE FROM customers WHERE customer_id = %s AND tenant_id = %s",
+                        (cid, _tid()))
     return True
 
 
@@ -525,8 +549,9 @@ def search_customers(query):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM customers WHERE name LIKE %s OR phone LIKE %s OR email LIKE %s LIMIT 20",
-                (q, q, q)
+                "SELECT * FROM customers WHERE tenant_id = %s AND "
+                "(name LIKE %s OR phone LIKE %s OR email LIKE %s) LIMIT 20",
+                (_tid(), q, q, q)
             )
             return cur.fetchall()
 
@@ -563,8 +588,8 @@ def get_invoices_for_customer(customer_id):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM invoices WHERE customer_id = %s ORDER BY invoice_id DESC",
-                (cid,)
+                "SELECT * FROM invoices WHERE customer_id = %s AND tenant_id = %s ORDER BY invoice_id DESC",
+                (cid, _tid())
             )
             return cur.fetchall()
 
@@ -581,10 +606,10 @@ def get_customer_product_aggregates(customer_id):
                        ROUND(SUM(ii.line_total), 2) AS total_amount
                 FROM invoice_items ii
                 JOIN invoices i ON i.invoice_id = ii.invoice_id
-                WHERE i.customer_id = %s
+                WHERE i.customer_id = %s AND i.tenant_id = %s
                 GROUP BY ii.product_id, ii.product_name
                 ORDER BY ii.product_name
-            """, (cid,))
+            """, (cid, _tid()))
             return cur.fetchall()
 
 
@@ -594,32 +619,38 @@ def get_all_invoices(include_deleted=False):
     with _conn() as conn:
         with conn.cursor() as cur:
             if include_deleted:
-                cur.execute("SELECT * FROM invoices ORDER BY invoice_id DESC")
+                cur.execute("SELECT * FROM invoices WHERE tenant_id = %s ORDER BY invoice_id DESC",
+                            (_tid(),))
             else:
-                cur.execute("SELECT * FROM invoices WHERE status != 'deleted' OR status IS NULL ORDER BY invoice_id DESC")
+                cur.execute("SELECT * FROM invoices WHERE tenant_id = %s AND "
+                            "(status != 'deleted' OR status IS NULL) ORDER BY invoice_id DESC",
+                            (_tid(),))
             return cur.fetchall()
 
 
 def get_deleted_invoices():
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM invoices WHERE status = 'deleted' ORDER BY invoice_id DESC")
+            cur.execute("SELECT * FROM invoices WHERE tenant_id = %s AND status = 'deleted' "
+                        "ORDER BY invoice_id DESC", (_tid(),))
             return cur.fetchall()
 
 
 def get_invoice(invoice_id):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM invoices WHERE invoice_id = %s", (int(invoice_id),))
+            cur.execute("SELECT * FROM invoices WHERE invoice_id = %s AND tenant_id = %s",
+                        (int(invoice_id), _tid()))
             return cur.fetchone()
 
 
 def delete_invoice(invoice_id, deleted_by, reason=""):
     """Soft-delete: mark deleted, reverse stock, reverse credit ledger."""
     iid = int(invoice_id)
+    tid = _tid()
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM invoices WHERE invoice_id = %s", (iid,))
+            cur.execute("SELECT * FROM invoices WHERE invoice_id = %s AND tenant_id = %s", (iid, tid))
             inv = cur.fetchone()
             if not inv:
                 raise ValueError("Invoice not found")
@@ -635,8 +666,8 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                     SELECT
                         COALESCE(SUM(CASE WHEN type='debit'  THEN amount ELSE 0 END),0) AS debit,
                         COALESCE(SUM(CASE WHEN type='credit' THEN amount ELSE 0 END),0) AS paid
-                    FROM credit_ledger WHERE customer_id = %s
-                """, (cid,))
+                    FROM credit_ledger WHERE customer_id = %s AND tenant_id = %s
+                """, (cid, tid))
                 bal = cur.fetchone()
                 inv_amount = float(inv.get("total") or 0)
                 if round((float(bal["debit"]) - inv_amount) - float(bal["paid"]), 2) < 0:
@@ -646,23 +677,25 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                         "adjust their balance first, then delete.")
 
             # Reverse stock
-            cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s", (iid,))
+            cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s AND tenant_id = %s", (iid, tid))
             for item in cur.fetchall():
                 cur.execute(
-                    "UPDATE products SET quantity = quantity + %s WHERE product_id = %s",
-                    (int(item["quantity"]), int(item["product_id"]))
+                    "UPDATE products SET quantity = quantity + %s WHERE product_id = %s AND tenant_id = %s",
+                    (int(item["quantity"]), int(item["product_id"]), tid)
                 )
             # Remove the credit-sale debit for this invoice (payments have NULL invoice_id)
-            cur.execute("DELETE FROM credit_ledger WHERE invoice_id = %s AND type = 'debit'", (iid,))
+            cur.execute("DELETE FROM credit_ledger WHERE invoice_id = %s AND type = 'debit' AND tenant_id = %s",
+                        (iid, tid))
             # Remove the auto-synced journal entry for this sale (cascade clears lines)
             cur.execute(
-                "DELETE FROM journal_entries WHERE source_type = 'sale' AND source_id = %s", (iid,))
+                "DELETE FROM journal_entries WHERE source_type = 'sale' AND source_id = %s AND tenant_id = %s",
+                (iid, tid))
             # Soft-delete
             from datetime import datetime as _dt
             cur.execute(
                 """UPDATE invoices SET status='deleted', deleted_at=%s, deleted_by=%s, delete_reason=%s
-                   WHERE invoice_id = %s""",
-                (_dt.now(), deleted_by, reason, iid)
+                   WHERE invoice_id = %s AND tenant_id = %s""",
+                (_dt.now(), deleted_by, reason, iid, tid)
             )
 
 
@@ -670,8 +703,8 @@ def get_invoice_items(invoice_id):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM invoice_items WHERE invoice_id = %s",
-                (int(invoice_id),)
+                "SELECT * FROM invoice_items WHERE invoice_id = %s AND tenant_id = %s",
+                (int(invoice_id), _tid())
             )
             return cur.fetchall()
 
@@ -680,11 +713,13 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
     cid = normalize_customer_id(customer_id)
     if payment_method == "Credit" and cid is None:
         raise ValueError("Credit payment requires a customer to be selected.")
+    tid = _tid()
 
     with _conn() as conn:
         with conn.cursor() as cur:
             if cid is not None:
-                cur.execute("SELECT customer_id FROM customers WHERE customer_id = %s", (cid,))
+                cur.execute("SELECT customer_id FROM customers WHERE customer_id = %s AND tenant_id = %s",
+                            (cid, tid))
                 if not cur.fetchone():
                     raise ValueError("Customer not found.")
 
@@ -697,7 +732,8 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
                 qty = int(item["quantity"])
                 discount_per_unit = float(item.get("discount_amount", 0))
 
-                cur.execute("SELECT * FROM products WHERE product_id = %s FOR UPDATE", (pid,))
+                cur.execute("SELECT * FROM products WHERE product_id = %s AND tenant_id = %s FOR UPDATE",
+                            (pid, tid))
                 prod = cur.fetchone()
                 if not prod:
                     raise ValueError(f"Product ID {pid} not found")
@@ -731,43 +767,46 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
                 discount_total += line_discount
 
                 line_entries.append((pid, prod["name"], purchase_price, unit_price, qty, line_discount, round(line_total, 2)))
-                cur.execute("UPDATE products SET quantity = quantity - %s WHERE product_id = %s", (qty, pid))
+                cur.execute("UPDATE products SET quantity = quantity - %s WHERE product_id = %s AND tenant_id = %s",
+                            (qty, pid, tid))
 
             net = round(subtotal - discount_total, 2)
             tax_amount = round(net * tax_rate, 2)
             total = round(net + tax_amount, 2)
 
             cur.execute("""
-                INSERT INTO invoices (created_at, subtotal, discount_total, tax_rate, tax_amount, total, payment_method, customer_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (datetime.now(), round(subtotal, 2), round(discount_total, 2), tax_rate, tax_amount, total, payment_method, cid))
+                INSERT INTO invoices (tenant_id, created_at, subtotal, discount_total, tax_rate, tax_amount, total, payment_method, customer_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (tid, datetime.now(), round(subtotal, 2), round(discount_total, 2), tax_rate, tax_amount, total, payment_method, cid))
             invoice_id = cur.lastrowid
 
             for pid, pname, pp, up, qty, ld, lt in line_entries:
                 cur.execute("""
-                    INSERT INTO invoice_items (invoice_id, product_id, product_name, purchase_price, counter_price, quantity, discount_amount, line_total)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (invoice_id, pid, pname, pp, up, qty, ld, lt))
+                    INSERT INTO invoice_items (tenant_id, invoice_id, product_id, product_name, purchase_price, counter_price, quantity, discount_amount, line_total)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (tid, invoice_id, pid, pname, pp, up, qty, ld, lt))
 
             if payment_method == "Credit" and cid is not None:
                 cur.execute("""
-                    INSERT INTO credit_ledger (customer_id, invoice_id, type, amount, note, created_at)
-                    VALUES (%s, %s, 'debit', %s, 'Credit sale', %s)
-                """, (cid, invoice_id, total, datetime.now()))
+                    INSERT INTO credit_ledger (tenant_id, customer_id, invoice_id, type, amount, note, created_at)
+                    VALUES (%s, %s, %s, 'debit', %s, 'Credit sale', %s)
+                """, (tid, cid, invoice_id, total, datetime.now()))
 
     return invoice_id
 
 
 def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id=None):
     iid = int(invoice_id)
+    tid = _tid()
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM invoices WHERE invoice_id = %s FOR UPDATE", (iid,))
+            cur.execute("SELECT * FROM invoices WHERE invoice_id = %s AND tenant_id = %s FOR UPDATE",
+                        (iid, tid))
             invoice = cur.fetchone()
             if not invoice:
                 raise ValueError("Invoice not found.")
 
-            cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s", (iid,))
+            cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s AND tenant_id = %s", (iid, tid))
             old_items = cur.fetchall()
 
             # Preserve original cost (COGS) per product so editing never rewrites
@@ -780,8 +819,8 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
             # Return stock from old items
             for old in old_items:
                 cur.execute(
-                    "UPDATE products SET quantity = quantity + %s WHERE product_id = %s",
-                    (int(old["quantity"]), int(old["product_id"]))
+                    "UPDATE products SET quantity = quantity + %s WHERE product_id = %s AND tenant_id = %s",
+                    (int(old["quantity"]), int(old["product_id"]), tid)
                 )
 
             old_payment = invoice.get("payment_method")
@@ -792,7 +831,8 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
             if new_payment == "Credit" and new_cid is None:
                 raise ValueError("Credit payment requires a customer.")
             if new_cid is not None:
-                cur.execute("SELECT customer_id FROM customers WHERE customer_id = %s", (new_cid,))
+                cur.execute("SELECT customer_id FROM customers WHERE customer_id = %s AND tenant_id = %s",
+                            (new_cid, tid))
                 if not cur.fetchone():
                     raise ValueError("Customer not found.")
 
@@ -805,7 +845,8 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                 qty = int(item["quantity"])
                 discount_per_unit = float(item.get("discount_amount", 0))
 
-                cur.execute("SELECT * FROM products WHERE product_id = %s FOR UPDATE", (pid,))
+                cur.execute("SELECT * FROM products WHERE product_id = %s AND tenant_id = %s FOR UPDATE",
+                            (pid, tid))
                 prod = cur.fetchone()
                 if not prod:
                     raise ValueError(f"Product ID {pid} not found")
@@ -839,36 +880,37 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                 discount_total += line_discount
 
                 line_entries.append((pid, prod["name"], purchase_price, unit_price, qty, line_discount, round(line_total, 2)))
-                cur.execute("UPDATE products SET quantity = quantity - %s WHERE product_id = %s", (qty, pid))
+                cur.execute("UPDATE products SET quantity = quantity - %s WHERE product_id = %s AND tenant_id = %s",
+                            (qty, pid, tid))
 
             net = round(subtotal - discount_total, 2)
             tax_amount = round(net * tax_rate, 2)
             total = round(net + tax_amount, 2)
 
-            cur.execute("DELETE FROM invoice_items WHERE invoice_id = %s", (iid,))
+            cur.execute("DELETE FROM invoice_items WHERE invoice_id = %s AND tenant_id = %s", (iid, tid))
             for pid, pname, pp, up, qty, ld, lt in line_entries:
                 cur.execute("""
-                    INSERT INTO invoice_items (invoice_id, product_id, product_name, purchase_price, counter_price, quantity, discount_amount, line_total)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (iid, pid, pname, pp, up, qty, ld, lt))
+                    INSERT INTO invoice_items (tenant_id, invoice_id, product_id, product_name, purchase_price, counter_price, quantity, discount_amount, line_total)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (tid, iid, pid, pname, pp, up, qty, ld, lt))
 
             cur.execute("""
                 UPDATE invoices SET
                     subtotal = %s, discount_total = %s, tax_rate = %s,
                     tax_amount = %s, total = %s, payment_method = %s, customer_id = %s
-                WHERE invoice_id = %s
-            """, (round(subtotal, 2), round(discount_total, 2), tax_rate, tax_amount, total, new_payment, new_cid, iid))
+                WHERE invoice_id = %s AND tenant_id = %s
+            """, (round(subtotal, 2), round(discount_total, 2), tax_rate, tax_amount, total, new_payment, new_cid, iid, tid))
 
             # Reconcile ledger: delete old debit for this invoice, re-add if Credit
             cur.execute(
-                "DELETE FROM credit_ledger WHERE invoice_id = %s AND type = 'debit'",
-                (iid,)
+                "DELETE FROM credit_ledger WHERE invoice_id = %s AND type = 'debit' AND tenant_id = %s",
+                (iid, tid)
             )
             if new_payment == "Credit" and new_cid is not None:
                 cur.execute("""
-                    INSERT INTO credit_ledger (customer_id, invoice_id, type, amount, note, created_at)
-                    VALUES (%s, %s, 'debit', %s, 'Credit sale', %s)
-                """, (new_cid, iid, total, datetime.now()))
+                    INSERT INTO credit_ledger (tenant_id, customer_id, invoice_id, type, amount, note, created_at)
+                    VALUES (%s, %s, %s, 'debit', %s, 'Credit sale', %s)
+                """, (tid, new_cid, iid, total, datetime.now()))
 
     return iid
 
@@ -881,11 +923,12 @@ def get_credit_ledger(customer_id=None):
         with conn.cursor() as cur:
             if cid is not None:
                 cur.execute(
-                    "SELECT * FROM credit_ledger WHERE customer_id = %s ORDER BY entry_id DESC",
-                    (cid,)
+                    "SELECT * FROM credit_ledger WHERE customer_id = %s AND tenant_id = %s ORDER BY entry_id DESC",
+                    (cid, _tid())
                 )
             else:
-                cur.execute("SELECT * FROM credit_ledger ORDER BY entry_id DESC")
+                cur.execute("SELECT * FROM credit_ledger WHERE tenant_id = %s ORDER BY entry_id DESC",
+                            (_tid(),))
             return cur.fetchall()
 
 
@@ -901,9 +944,9 @@ def add_ledger_payment(customer_id, amount, note=""):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO credit_ledger (customer_id, invoice_id, type, amount, note, created_at)
-                VALUES (%s, NULL, 'credit', %s, %s, %s)
-            """, (cid, amount, (note or "").strip(), datetime.now()))
+                INSERT INTO credit_ledger (tenant_id, customer_id, invoice_id, type, amount, note, created_at)
+                VALUES (%s, %s, NULL, 'credit', %s, %s, %s)
+            """, (_tid(), cid, amount, (note or "").strip(), datetime.now()))
             return cur.lastrowid
 
 
@@ -919,9 +962,9 @@ def add_ledger_debit(customer_id, amount, note=""):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO credit_ledger (customer_id, invoice_id, type, amount, note, created_at)
-                VALUES (%s, NULL, 'debit', %s, %s, %s)
-            """, (cid, amount, (note or "").strip(), datetime.now()))
+                INSERT INTO credit_ledger (tenant_id, customer_id, invoice_id, type, amount, note, created_at)
+                VALUES (%s, %s, NULL, 'debit', %s, %s, %s)
+            """, (_tid(), cid, amount, (note or "").strip(), datetime.now()))
             return cur.lastrowid
 
 
@@ -941,8 +984,9 @@ def get_all_credit_balances():
                        SUM(CASE WHEN type='debit'  THEN amount ELSE 0 END) AS total_debt,
                        SUM(CASE WHEN type='credit' THEN amount ELSE 0 END) AS total_paid
                 FROM credit_ledger
+                WHERE tenant_id = %s
                 GROUP BY customer_id
-            """)
+            """, (_tid(),))
             rows = cur.fetchall()
     result = []
     for row in rows:
@@ -969,8 +1013,9 @@ def get_today_sales():
             cur.execute("""
                 SELECT COUNT(*) AS cnt, COALESCE(SUM(total), 0) AS total
                 FROM invoices
-                WHERE DATE(created_at) = CURDATE()
-            """)
+                WHERE tenant_id = %s AND DATE(created_at) = CURDATE()
+                  AND (status != 'deleted' OR status IS NULL)
+            """, (_tid(),))
             row = cur.fetchone()
     return int(row["cnt"]), round(float(row["total"]), 2)
 
@@ -1201,14 +1246,15 @@ def delete_user(user_id):
 def get_all_suppliers():
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM suppliers ORDER BY supplier_id")
+            cur.execute("SELECT * FROM suppliers WHERE tenant_id = %s ORDER BY supplier_id", (_tid(),))
             return cur.fetchall()
 
 
 def get_supplier(supplier_id):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM suppliers WHERE supplier_id = %s", (int(supplier_id),))
+            cur.execute("SELECT * FROM suppliers WHERE supplier_id = %s AND tenant_id = %s",
+                        (int(supplier_id), _tid()))
             return cur.fetchone()
 
 
@@ -1216,9 +1262,10 @@ def add_supplier(data):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO suppliers (name, phone, email, address, notes, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s)
+                INSERT INTO suppliers (tenant_id, name, phone, email, address, notes, created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
             """, (
+                _tid(),
                 (data.get("name") or "").strip(),
                 (data.get("phone") or "").strip(),
                 (data.get("email") or "").strip(),
@@ -1234,7 +1281,7 @@ def update_supplier(supplier_id, data):
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE suppliers SET name=%s, phone=%s, email=%s, address=%s, notes=%s
-                WHERE supplier_id=%s
+                WHERE supplier_id=%s AND tenant_id=%s
             """, (
                 (data.get("name") or "").strip(),
                 (data.get("phone") or "").strip(),
@@ -1242,6 +1289,7 @@ def update_supplier(supplier_id, data):
                 (data.get("address") or "").strip(),
                 (data.get("notes") or "").strip(),
                 int(supplier_id),
+                _tid(),
             ))
 
 
@@ -1249,10 +1297,11 @@ def delete_supplier(supplier_id):
     sid = int(supplier_id)
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS cnt FROM purchase_invoices WHERE supplier_id=%s", (sid,))
+            cur.execute("SELECT COUNT(*) AS cnt FROM purchase_invoices WHERE supplier_id=%s AND tenant_id=%s",
+                        (sid, _tid()))
             if cur.fetchone()["cnt"] > 0:
                 raise ValueError("Cannot delete supplier: purchase invoices reference this supplier.")
-            cur.execute("DELETE FROM suppliers WHERE supplier_id=%s", (sid,))
+            cur.execute("DELETE FROM suppliers WHERE supplier_id=%s AND tenant_id=%s", (sid, _tid()))
     return True
 
 
@@ -1264,9 +1313,10 @@ def supplier_lookup():
 
 def create_purchase_invoice(supplier_id, items, notes=""):
     sid = int(supplier_id)
+    tid = _tid()
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT supplier_id FROM suppliers WHERE supplier_id=%s", (sid,))
+            cur.execute("SELECT supplier_id FROM suppliers WHERE supplier_id=%s AND tenant_id=%s", (sid, tid))
             if not cur.fetchone():
                 raise ValueError("Supplier not found.")
 
@@ -1277,7 +1327,7 @@ def create_purchase_invoice(supplier_id, items, notes=""):
                 pid = int(item["product_id"])
                 qty = int(item["quantity"])
                 unit_cost = float(item["unit_cost"])
-                cur.execute("SELECT * FROM products WHERE product_id=%s FOR UPDATE", (pid,))
+                cur.execute("SELECT * FROM products WHERE product_id=%s AND tenant_id=%s FOR UPDATE", (pid, tid))
                 prod = cur.fetchone()
                 if not prod:
                     raise ValueError(f"Product ID {pid} not found")
@@ -1293,28 +1343,28 @@ def create_purchase_invoice(supplier_id, items, notes=""):
                 else:
                     new_cost = unit_cost
                 cur.execute(
-                    "UPDATE products SET quantity=%s, purchase_price=%s, last_supplier_id=%s WHERE product_id=%s",
-                    (new_qty, new_cost, sid, pid)
+                    "UPDATE products SET quantity=%s, purchase_price=%s, last_supplier_id=%s WHERE product_id=%s AND tenant_id=%s",
+                    (new_qty, new_cost, sid, pid, tid)
                 )
 
             total_amount = round(total_amount, 2)
             cur.execute("""
-                INSERT INTO purchase_invoices (supplier_id, created_at, total_amount, notes)
-                VALUES (%s,%s,%s,%s)
-            """, (sid, datetime.now(), total_amount, (notes or "").strip()))
+                INSERT INTO purchase_invoices (tenant_id, supplier_id, created_at, total_amount, notes)
+                VALUES (%s,%s,%s,%s,%s)
+            """, (tid, sid, datetime.now(), total_amount, (notes or "").strip()))
             purchase_id = cur.lastrowid
 
             for pid, pname, qty, uc, lt in line_entries:
                 cur.execute("""
                     INSERT INTO purchase_invoice_items
-                        (purchase_id, product_id, product_name, quantity, unit_cost, line_total)
-                    VALUES (%s,%s,%s,%s,%s,%s)
-                """, (purchase_id, pid, pname, qty, uc, lt))
+                        (tenant_id, purchase_id, product_id, product_name, quantity, unit_cost, line_total)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                """, (tid, purchase_id, pid, pname, qty, uc, lt))
 
             cur.execute("""
-                INSERT INTO supplier_ledger (supplier_id, purchase_id, type, amount, note, created_at)
-                VALUES (%s,%s,'debit',%s,%s,%s)
-            """, (sid, purchase_id, total_amount, f"Purchase invoice #{purchase_id}", datetime.now()))
+                INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
+                VALUES (%s,%s,%s,'debit',%s,%s,%s)
+            """, (tid, sid, purchase_id, total_amount, f"Purchase invoice #{purchase_id}", datetime.now()))
 
     return purchase_id
 
@@ -1322,14 +1372,15 @@ def create_purchase_invoice(supplier_id, items, notes=""):
 def get_all_purchase_invoices():
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM purchase_invoices ORDER BY purchase_id DESC")
+            cur.execute("SELECT * FROM purchase_invoices WHERE tenant_id=%s ORDER BY purchase_id DESC", (_tid(),))
             return cur.fetchall()
 
 
 def get_purchase_invoice(purchase_id):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM purchase_invoices WHERE purchase_id=%s", (int(purchase_id),))
+            cur.execute("SELECT * FROM purchase_invoices WHERE purchase_id=%s AND tenant_id=%s",
+                        (int(purchase_id), _tid()))
             return cur.fetchone()
 
 
@@ -1337,8 +1388,8 @@ def get_purchase_invoice_items(purchase_id):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM purchase_invoice_items WHERE purchase_id=%s",
-                (int(purchase_id),)
+                "SELECT * FROM purchase_invoice_items WHERE purchase_id=%s AND tenant_id=%s",
+                (int(purchase_id), _tid())
             )
             return cur.fetchall()
 
@@ -1355,9 +1406,9 @@ def add_supplier_payment(supplier_id, amount, note=""):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO supplier_ledger (supplier_id, purchase_id, type, amount, note, created_at)
-                VALUES (%s, NULL, 'credit', %s, %s, %s)
-            """, (sid, amount, (note or "").strip(), datetime.now()))
+                INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
+                VALUES (%s, %s, NULL, 'credit', %s, %s, %s)
+            """, (_tid(), sid, amount, (note or "").strip(), datetime.now()))
             return cur.lastrowid
 
 
@@ -1366,11 +1417,11 @@ def get_supplier_ledger_entries(supplier_id=None):
         with conn.cursor() as cur:
             if supplier_id is not None:
                 cur.execute(
-                    "SELECT * FROM supplier_ledger WHERE supplier_id=%s ORDER BY entry_id",
-                    (int(supplier_id),)
+                    "SELECT * FROM supplier_ledger WHERE supplier_id=%s AND tenant_id=%s ORDER BY entry_id",
+                    (int(supplier_id), _tid())
                 )
             else:
-                cur.execute("SELECT * FROM supplier_ledger ORDER BY entry_id")
+                cur.execute("SELECT * FROM supplier_ledger WHERE tenant_id=%s ORDER BY entry_id", (_tid(),))
             return cur.fetchall()
 
 
@@ -1389,8 +1440,8 @@ def get_all_supplier_balances():
                 SELECT supplier_id,
                        SUM(CASE WHEN type='debit'  THEN amount ELSE 0 END) AS total_debt,
                        SUM(CASE WHEN type='credit' THEN amount ELSE 0 END) AS total_paid
-                FROM supplier_ledger GROUP BY supplier_id
-            """)
+                FROM supplier_ledger WHERE tenant_id = %s GROUP BY supplier_id
+            """, (_tid(),))
             rows = cur.fetchall()
     result = []
     for row in rows:
@@ -1454,10 +1505,10 @@ def get_sales_pl_report(start_date, end_date):
                     ROUND(ii.line_total - ii.purchase_price * ii.quantity, 2) AS profit
                 FROM invoice_items ii
                 JOIN invoices i ON i.invoice_id = ii.invoice_id
-                WHERE DATE(i.created_at) BETWEEN %s AND %s
+                WHERE i.tenant_id = %s AND DATE(i.created_at) BETWEEN %s AND %s
                   AND (i.status IS NULL OR i.status <> 'deleted')
                 ORDER BY i.created_at, i.invoice_id
-            """, (start_date, end_date))
+            """, (_tid(), start_date, end_date))
             rows = cur.fetchall()
     for r in rows:
         r["is_credit"] = str(r.get("payment_method") or "").strip().lower() == "credit"
@@ -1481,12 +1532,12 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
                 FROM invoice_items ii
                 JOIN invoices i ON i.invoice_id = ii.invoice_id
                 JOIN products p ON p.product_id = ii.product_id
-                WHERE p.last_supplier_id = %s
+                WHERE p.last_supplier_id = %s AND i.tenant_id = %s
                   AND DATE(i.created_at) BETWEEN %s AND %s
                   AND (i.status IS NULL OR i.status <> 'deleted')
                 GROUP BY ii.product_id, ii.product_name
                 ORDER BY ii.product_name
-            """, (sid, start_date, end_date))
+            """, (sid, _tid(), start_date, end_date))
             rows = cur.fetchall()
     total_revenue = round(sum(float(r["total_revenue"]) for r in rows), 2)
     total_cogs = round(sum(float(r["total_cogs"]) for r in rows), 2)
@@ -1497,42 +1548,48 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
 # ── Double-entry accounting: data layer ──────────────────────────────
 
 def seed_chart_of_accounts():
+    tid = get_current_tenant()
+    if tid is None:
+        return  # no tenant context -> nothing to seed
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS n FROM accounts")
+            cur.execute("SELECT COUNT(*) AS n FROM accounts WHERE tenant_id = %s", (tid,))
             if cur.fetchone()["n"] > 0:
                 return
             cur.executemany(
-                "INSERT INTO accounts (code, name, type, is_system) VALUES (%s,%s,%s,%s)",
-                [(c, n, t, 1 if sys else 0) for c, n, t, sys in CHART_OF_ACCOUNTS],
+                "INSERT INTO accounts (tenant_id, code, name, type, is_system) VALUES (%s,%s,%s,%s,%s)",
+                [(tid, c, n, t, 1 if sys else 0) for c, n, t, sys in CHART_OF_ACCOUNTS],
             )
 
 
 def get_all_accounts():
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM accounts ORDER BY code")
+            cur.execute("SELECT * FROM accounts WHERE tenant_id = %s ORDER BY code", (_tid(),))
             return cur.fetchall()
 
 
 def get_account(account_id):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM accounts WHERE account_id = %s", (int(account_id),))
+            cur.execute("SELECT * FROM accounts WHERE account_id = %s AND tenant_id = %s",
+                        (int(account_id), _tid()))
             return cur.fetchone()
 
 
 def get_account_by_code(code):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM accounts WHERE code = %s", (str(code).strip(),))
+            cur.execute("SELECT * FROM accounts WHERE code = %s AND tenant_id = %s",
+                        (str(code).strip(), _tid()))
             return cur.fetchone()
 
 
 def get_accounts_by_type(atype):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM accounts WHERE type = %s ORDER BY code", (atype,))
+            cur.execute("SELECT * FROM accounts WHERE type = %s AND tenant_id = %s ORDER BY code",
+                        (atype, _tid()))
             return cur.fetchall()
 
 
@@ -1547,8 +1604,8 @@ def add_account(code, name, atype, is_system=False):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO accounts (code, name, type, is_system) VALUES (%s,%s,%s,%s)",
-                (code, str(name).strip(), atype, 1 if is_system else 0),
+                "INSERT INTO accounts (tenant_id, code, name, type, is_system) VALUES (%s,%s,%s,%s,%s)",
+                (_tid(), code, str(name).strip(), atype, 1 if is_system else 0),
             )
             return cur.lastrowid
 
@@ -1582,6 +1639,7 @@ def post_journal(description, lines, source_type="manual", source_id=None,
             f"Entry not balanced: debits {total_debit:.2f} != credits {total_credit:.2f}")
 
     when = entry_date or datetime.now()
+    tid = _tid()
     with _conn() as conn:
         with conn.cursor() as cur:
             ids = {a["account_id"] for a in get_all_accounts()}
@@ -1589,14 +1647,14 @@ def post_journal(description, lines, source_type="manual", source_id=None,
                 if aid not in ids:
                     raise ValueError(f"Account id {aid} not found.")
             cur.execute(
-                """INSERT INTO journal_entries (date, description, source_type, source_id, created_by)
-                   VALUES (%s,%s,%s,%s,%s)""",
-                (when, str(description).strip(), source_type, source_id, created_by),
+                """INSERT INTO journal_entries (tenant_id, date, description, source_type, source_id, created_by)
+                   VALUES (%s,%s,%s,%s,%s,%s)""",
+                (tid, when, str(description).strip(), source_type, source_id, created_by),
             )
             entry_id = cur.lastrowid
             cur.executemany(
-                "INSERT INTO journal_lines (entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s)",
-                [(entry_id, aid, debit, credit) for aid, debit, credit in norm],
+                "INSERT INTO journal_lines (tenant_id, entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s,%s)",
+                [(tid, entry_id, aid, debit, credit) for aid, debit, credit in norm],
             )
             return entry_id
 
@@ -1605,9 +1663,10 @@ def get_journal_lines(entry_id=None):
     with _conn() as conn:
         with conn.cursor() as cur:
             if entry_id is not None:
-                cur.execute("SELECT * FROM journal_lines WHERE entry_id = %s", (int(entry_id),))
+                cur.execute("SELECT * FROM journal_lines WHERE entry_id = %s AND tenant_id = %s",
+                            (int(entry_id), _tid()))
             else:
-                cur.execute("SELECT * FROM journal_lines")
+                cur.execute("SELECT * FROM journal_lines WHERE tenant_id = %s", (_tid(),))
             return cur.fetchall()
 
 
@@ -1620,7 +1679,7 @@ def get_account_balance(account_id):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT COALESCE(SUM(debit),0) AS d, COALESCE(SUM(credit),0) AS c "
-                "FROM journal_lines WHERE account_id = %s", (aid,))
+                "FROM journal_lines WHERE account_id = %s AND tenant_id = %s", (aid, _tid()))
             r = cur.fetchone()
     debit = float(r["d"])
     credit = float(r["c"])
@@ -1638,9 +1697,10 @@ def get_trial_balance():
                        COALESCE(SUM(jl.credit),0) AS credit
                 FROM accounts a
                 LEFT JOIN journal_lines jl ON jl.account_id = a.account_id
+                WHERE a.tenant_id = %s
                 GROUP BY a.account_id, a.code, a.name, a.type
                 ORDER BY a.code
-            """)
+            """, (_tid(),))
             raw = cur.fetchall()
     rows = []
     total_debit = 0.0
@@ -1687,8 +1747,8 @@ def record_expense(expense_account_id, amount, paid_from_account_id,
 
 def get_expense_entries(start_date=None, end_date=None):
     """List expense journal entries with amount, category, and paid-from account."""
-    where = ["je.source_type = 'expense'"]
-    params = []
+    where = ["je.source_type = 'expense'", "je.tenant_id = %s"]
+    params = [_tid()]
     if start_date:
         where.append("DATE(je.date) >= %s")
         params.append(start_date)
@@ -1740,7 +1800,8 @@ def update_account_name(account_id, name):
         raise ValueError("System accounts cannot be renamed.")
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE accounts SET name = %s WHERE account_id = %s", (name, aid))
+            cur.execute("UPDATE accounts SET name = %s WHERE account_id = %s AND tenant_id = %s",
+                        (name, aid, _tid()))
 
 
 def next_expense_code():
@@ -1760,7 +1821,8 @@ def next_expense_code():
 def get_books_start():
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT date FROM journal_entries WHERE source_type='opening' LIMIT 1")
+            cur.execute("SELECT date FROM journal_entries WHERE source_type='opening' AND tenant_id=%s LIMIT 1",
+                        (_tid(),))
             r = cur.fetchone()
     if not r or not r.get("date"):
         return None
@@ -1776,8 +1838,8 @@ def get_opening_balances():
                 FROM journal_entries je
                 JOIN journal_lines jl ON jl.entry_id = je.entry_id
                 JOIN accounts a ON a.account_id = jl.account_id
-                WHERE je.source_type = 'opening'
-            """)
+                WHERE je.source_type = 'opening' AND je.tenant_id = %s
+            """, (_tid(),))
             raw = cur.fetchall()
     out = {}
     for r in raw:
@@ -1814,21 +1876,22 @@ def set_opening_balances(start_date, balances, created_by="system"):
         lines.append((cap_id, -capital, 0.0))
     if len(lines) < 2:
         raise ValueError("Enter at least one opening balance.")
+    tid = _tid()
     with _conn() as conn:
         with conn.cursor() as cur:
             # Replace opening + clear auto-synced operational entries so the next
             # sync re-posts only transactions on/after the new start date.
             cur.execute("""DELETE FROM journal_entries
-                           WHERE source_type IN ('opening','sale','purchase',
-                                                 'supplier_payment','customer_payment')""")
+                           WHERE tenant_id = %s AND source_type IN ('opening','sale','purchase',
+                                                 'supplier_payment','customer_payment')""", (tid,))
             cur.execute(
-                """INSERT INTO journal_entries (date, description, source_type, source_id, created_by)
-                   VALUES (%s,%s,'opening',NULL,%s)""",
-                (datetime.combine(start_date, datetime.min.time()), "Opening balances", created_by))
+                """INSERT INTO journal_entries (tenant_id, date, description, source_type, source_id, created_by)
+                   VALUES (%s,%s,%s,'opening',NULL,%s)""",
+                (tid, datetime.combine(start_date, datetime.min.time()), "Opening balances", created_by))
             eid = cur.lastrowid
             cur.executemany(
-                "INSERT INTO journal_lines (entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s)",
-                [(eid, aid, d, c) for aid, d, c in lines])
+                "INSERT INTO journal_lines (tenant_id, entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s,%s)",
+                [(tid, eid, aid, d, c) for aid, d, c in lines])
             return eid
 
 
@@ -1836,7 +1899,8 @@ def _existing_journal_sources():
     out = set()
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT source_type, source_id FROM journal_entries WHERE source_id IS NOT NULL")
+            cur.execute("SELECT source_type, source_id FROM journal_entries "
+                        "WHERE source_id IS NOT NULL AND tenant_id = %s", (_tid(),))
             for r in cur.fetchall():
                 out.add((str(r["source_type"]), str(int(r["source_id"]))))
     return out
@@ -1910,6 +1974,7 @@ def sync_journal_from_operations():
 
     if not pending:
         return 0
+    tid = _tid()
     with _conn() as conn:
         with conn.cursor() as cur:
             for when, desc, stype, sid, lines in pending:
@@ -1918,12 +1983,12 @@ def sync_journal_from_operations():
                 if td != tc:
                     continue
                 cur.execute(
-                    """INSERT INTO journal_entries (date, description, source_type, source_id, created_by)
-                       VALUES (%s,%s,%s,%s,'system')""", (when, desc, stype, sid))
+                    """INSERT INTO journal_entries (tenant_id, date, description, source_type, source_id, created_by)
+                       VALUES (%s,%s,%s,%s,%s,'system')""", (tid, when, desc, stype, sid))
                 eid = cur.lastrowid
                 cur.executemany(
-                    "INSERT INTO journal_lines (entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s)",
-                    [(eid, aid, d, c) for aid, d, c in lines])
+                    "INSERT INTO journal_lines (tenant_id, entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s,%s)",
+                    [(tid, eid, aid, d, c) for aid, d, c in lines])
     return len(pending)
 
 
@@ -1965,9 +2030,10 @@ def get_all_partners(include_inactive=False):
     with _conn() as conn:
         with conn.cursor() as cur:
             if include_inactive:
-                cur.execute("SELECT * FROM partners ORDER BY partner_id")
+                cur.execute("SELECT * FROM partners WHERE tenant_id = %s ORDER BY partner_id", (_tid(),))
             else:
-                cur.execute("SELECT * FROM partners WHERE is_active = 1 ORDER BY partner_id")
+                cur.execute("SELECT * FROM partners WHERE tenant_id = %s AND is_active = 1 ORDER BY partner_id",
+                            (_tid(),))
             rows = cur.fetchall()
     for r in rows:
         r["share_pct"] = float(r["share_pct"] or 0)
@@ -1978,7 +2044,8 @@ def get_all_partners(include_inactive=False):
 def get_partner(partner_id):
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM partners WHERE partner_id = %s", (int(partner_id),))
+            cur.execute("SELECT * FROM partners WHERE partner_id = %s AND tenant_id = %s",
+                        (int(partner_id), _tid()))
             r = cur.fetchone()
     if r:
         r["share_pct"] = float(r["share_pct"] or 0)
@@ -1995,8 +2062,8 @@ def add_partner(name, share_pct):
         raise ValueError("Share % must be between 0 and 100.")
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO partners (name, share_pct, is_active) VALUES (%s,%s,1)",
-                        (name, share))
+            cur.execute("INSERT INTO partners (tenant_id, name, share_pct, is_active) VALUES (%s,%s,%s,1)",
+                        (_tid(), name, share))
             return cur.lastrowid
 
 
@@ -2011,8 +2078,8 @@ def update_partner(partner_id, name, share_pct, is_active=True):
         raise ValueError("Partner not found.")
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE partners SET name=%s, share_pct=%s, is_active=%s WHERE partner_id=%s",
-                        (name, share, 1 if is_active else 0, int(partner_id)))
+            cur.execute("UPDATE partners SET name=%s, share_pct=%s, is_active=%s WHERE partner_id=%s AND tenant_id=%s",
+                        (name, share, 1 if is_active else 0, int(partner_id), _tid()))
 
 
 def add_partner_transaction(partner_id, txn_type, amount, note="", txn_date=None,
@@ -2032,9 +2099,9 @@ def add_partner_transaction(partner_id, txn_type, amount, note="", txn_date=None
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO partner_transactions (partner_id, type, amount, note, date)
-                   VALUES (%s,%s,%s,%s,%s)""",
-                (pid, txn_type, amount, (note or "").strip(), when_dt))
+                """INSERT INTO partner_transactions (tenant_id, partner_id, type, amount, note, date)
+                   VALUES (%s,%s,%s,%s,%s,%s)""",
+                (_tid(), pid, txn_type, amount, (note or "").strip(), when_dt))
             txn_id = cur.lastrowid
     acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
     if txn_type == "capital":
@@ -2054,10 +2121,11 @@ def get_partner_transactions(partner_id=None):
     with _conn() as conn:
         with conn.cursor() as cur:
             if partner_id is not None:
-                cur.execute("SELECT * FROM partner_transactions WHERE partner_id = %s ORDER BY txn_id DESC",
-                            (int(partner_id),))
+                cur.execute("SELECT * FROM partner_transactions WHERE partner_id = %s AND tenant_id = %s ORDER BY txn_id DESC",
+                            (int(partner_id), _tid()))
             else:
-                cur.execute("SELECT * FROM partner_transactions ORDER BY txn_id DESC")
+                cur.execute("SELECT * FROM partner_transactions WHERE tenant_id = %s ORDER BY txn_id DESC",
+                            (_tid(),))
             return cur.fetchall()
 
 

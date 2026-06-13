@@ -193,11 +193,11 @@ def account_create():
         return redirect(url_for("accounts"))
 
     tid = excel_db.create_tenant(name)
-    # Initialise the new business's data store (Excel: creates data_<id>.xlsx
-    # and its own chart of accounts).
+    # Initialise the new business's data store and seed its own chart of accounts.
     tenant.set_current_tenant(tid)
     try:
         excel_db.init_workbook()
+        excel_db.seed_chart_of_accounts()
     finally:
         tenant.set_current_tenant(current_user.tenant_id)
     excel_db.add_user(admin_user, generate_password_hash(admin_pass),
