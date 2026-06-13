@@ -85,6 +85,14 @@ def super_admin_required(f):
     return decorated
 
 
+def _user_in_my_tenant(user_id):
+    """True if the target user belongs to the current admin's business."""
+    target = excel_db.get_user_by_id(user_id)
+    tid = target.get("tenant_id") if target else None
+    tid = int(tid) if tid not in (None, "") else None
+    return target is not None and tid == current_user.tenant_id
+
+
 _PUBLIC_ENDPOINTS = {"login", "setup", "static"}
 # Endpoints a super-admin (no tenant) is allowed to use.
 _SUPERADMIN_ENDPOINTS = {"accounts", "account_create", "account_toggle", "logout"}
@@ -252,6 +260,9 @@ def user_add():
 @login_required
 @admin_required
 def user_change_password(user_id):
+    if not _user_in_my_tenant(user_id):
+        flash("User not found.", "danger")
+        return redirect(url_for("users_list"))
     password = request.form.get("password", "")
     if len(password) < 6:
         flash("Password must be at least 6 characters.", "danger")
@@ -265,10 +276,14 @@ def user_change_password(user_id):
 @login_required
 @admin_required
 def user_change_role(user_id):
+    if not _user_in_my_tenant(user_id):
+        flash("User not found.", "danger")
+        return redirect(url_for("users_list"))
     if str(user_id) == current_user.id:
         flash("Cannot change your own role.", "danger")
         return redirect(url_for("users_list"))
     role = request.form.get("role", "staff")
+    role = role if role in ("admin", "staff") else "staff"
     excel_db.set_user_role(user_id, role)
     flash("Role updated.", "success")
     return redirect(url_for("users_list"))
@@ -278,6 +293,9 @@ def user_change_role(user_id):
 @login_required
 @admin_required
 def user_toggle(user_id):
+    if not _user_in_my_tenant(user_id):
+        flash("User not found.", "danger")
+        return redirect(url_for("users_list"))
     if str(user_id) == current_user.id:
         flash("Cannot deactivate your own account.", "danger")
         return redirect(url_for("users_list"))
@@ -289,6 +307,9 @@ def user_toggle(user_id):
 @login_required
 @admin_required
 def user_delete(user_id):
+    if not _user_in_my_tenant(user_id):
+        flash("User not found.", "danger")
+        return redirect(url_for("users_list"))
     if str(user_id) == current_user.id:
         flash("Cannot delete your own account.", "danger")
         return redirect(url_for("users_list"))
