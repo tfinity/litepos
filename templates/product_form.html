@@ -44,9 +44,16 @@
                                    placeholder="Maximum retail price">
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Quantity in Stock *</label>
-                            <input type="number" name="quantity" class="form-control" min="0" required
-                                   value="{{ product.quantity if product else '' }}">
+                            <label class="form-label">{{ "Quantity in Stock" if product else "Opening Stock" }}</label>
+                            <input type="number" name="quantity" class="form-control" min="0"
+                                   value="{{ product.quantity if product else 0 }}">
+                            {% if not product %}
+                            <div class="form-text">
+                                Only stock you <strong>already have</strong>. New stock arriving from a
+                                supplier should be added through <strong>Purchases</strong> (so cost,
+                                supplier and payable are recorded) — don't enter it here too.
+                            </div>
+                            {% endif %}
                         </div>
                         <div class="col-md-4">
                             <label class="form-label">Barcode / SKU</label>
