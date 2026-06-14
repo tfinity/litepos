@@ -1739,9 +1739,10 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             ws_pitems.append(entry)
 
         # Always record the purchase in the supplier ledger (relationship history).
+        # Use the user's note if given, else a generic reference.
+        debit_note = (notes or "").strip() or f"Purchase invoice #{purchase_id}"
         sl_id = _next_id(ws_sl)
-        ws_sl.append([sl_id, sid, purchase_id, "debit", total_amount,
-                      f"Purchase invoice #{purchase_id}", when])
+        ws_sl.append([sl_id, sid, purchase_id, "debit", total_amount, debit_note, when])
         # If paid now, also record the payment so the supplier balance nets to zero.
         if payment_method in ("cash", "bank"):
             ws_sl.append([sl_id + 1, sid, purchase_id, "credit", total_amount,
