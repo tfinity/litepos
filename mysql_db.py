@@ -186,14 +186,19 @@ def init_workbook():
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS purchase_invoices (
-                    purchase_id  INT AUTO_INCREMENT PRIMARY KEY,
-                    supplier_id  INT NOT NULL,
-                    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    total_amount DECIMAL(12,2),
-                    notes        TEXT,
+                    purchase_id    INT AUTO_INCREMENT PRIMARY KEY,
+                    supplier_id    INT NOT NULL,
+                    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    total_amount   DECIMAL(12,2),
+                    notes          TEXT,
+                    payment_method VARCHAR(20) DEFAULT 'credit',
                     FOREIGN KEY (supplier_id) REFERENCES suppliers(supplier_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            try:
+                cur.execute("ALTER TABLE purchase_invoices ADD COLUMN payment_method VARCHAR(20) DEFAULT 'credit'")
+            except Exception:
+                pass  # column already exists
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS purchase_invoice_items (
                     item_id      INT AUTO_INCREMENT PRIMARY KEY,
@@ -1329,9 +1334,12 @@ def supplier_lookup():
 
 # ── Purchase Invoices ─────────────────────────────────────────────────
 
-def create_purchase_invoice(supplier_id, items, notes=""):
+def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit"):
     sid = int(supplier_id)
     tid = _tid()
+    payment_method = (payment_method or "credit").strip().lower()
+    if payment_method not in ("credit", "cash", "bank"):
+        payment_method = "credit"
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT supplier_id FROM suppliers WHERE supplier_id=%s AND tenant_id=%s", (sid, tid))
@@ -1367,9 +1375,9 @@ def create_purchase_invoice(supplier_id, items, notes=""):
 
             total_amount = round(total_amount, 2)
             cur.execute("""
-                INSERT INTO purchase_invoices (tenant_id, supplier_id, created_at, total_amount, notes)
-                VALUES (%s,%s,%s,%s,%s)
-            """, (tid, sid, datetime.now(), total_amount, (notes or "").strip()))
+                INSERT INTO purchase_invoices (tenant_id, supplier_id, created_at, total_amount, notes, payment_method)
+                VALUES (%s,%s,%s,%s,%s,%s)
+            """, (tid, sid, datetime.now(), total_amount, (notes or "").strip(), payment_method))
             purchase_id = cur.lastrowid
 
             for pid, pname, qty, uc, lt in line_entries:
@@ -1379,10 +1387,12 @@ def create_purchase_invoice(supplier_id, items, notes=""):
                     VALUES (%s,%s,%s,%s,%s,%s,%s)
                 """, (tid, purchase_id, pid, pname, qty, uc, lt))
 
-            cur.execute("""
-                INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
-                VALUES (%s,%s,%s,'debit',%s,%s,%s)
-            """, (tid, sid, purchase_id, total_amount, f"Purchase invoice #{purchase_id}", datetime.now()))
+            # Only a credit (unpaid) purchase creates a payable in the supplier ledger.
+            if payment_method == "credit":
+                cur.execute("""
+                    INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
+                    VALUES (%s,%s,%s,'debit',%s,%s,%s)
+                """, (tid, sid, purchase_id, total_amount, f"Purchase invoice #{purchase_id}", datetime.now()))
 
     return purchase_id
 
@@ -1955,7 +1965,7 @@ def _realized_credit_invoice_ids():
 
 def sync_journal_from_operations():
     acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
-    CASH, AR, INV, AP = acc["1000"], acc["1100"], acc["1200"], acc["2000"]
+    CASH, BANK, AR, INV, AP = acc["1000"], acc["1010"], acc["1100"], acc["1200"], acc["2000"]
     TAX, SALES, COGS = acc["2100"], acc["4000"], acc["5000"]
     existing = _existing_journal_sources()
     books_start = get_books_start()
@@ -1992,6 +2002,7 @@ def sync_journal_from_operations():
             lines.append((INV, 0.0, cogs))
         pending.append((inv.get("created_at"), f"Sale INV-{sid}", "sale", sid, lines))
 
+    _pay_acct = {"credit": AP, "cash": CASH, "bank": BANK}
     for p in get_all_purchase_invoices():
         pid = int(p["purchase_id"])
         if ("purchase", str(pid)) in existing or not _after_start(p.get("created_at")):
@@ -1999,8 +2010,10 @@ def sync_journal_from_operations():
         total = round(float(p.get("total_amount") or 0), 2)
         if total <= 0:
             continue
+        pm = str(p.get("payment_method") or "credit").strip().lower()
+        credit_acct = _pay_acct.get(pm, AP)
         pending.append((p.get("created_at"), f"Purchase PINV-{pid}", "purchase", pid,
-                        [(INV, total, 0.0), (AP, 0.0, total)]))
+                        [(INV, total, 0.0), (credit_acct, 0.0, total)]))
 
     for e in get_supplier_ledger_entries():
         if e.get("type") != "credit":

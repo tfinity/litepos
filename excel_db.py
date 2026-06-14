@@ -115,7 +115,7 @@ SUPPLIER_HEADERS = [
     "supplier_id", "name", "phone", "email", "address", "notes", "created_at",
 ]
 PURCHASE_HEADERS = [
-    "purchase_id", "supplier_id", "created_at", "total_amount", "notes",
+    "purchase_id", "supplier_id", "created_at", "total_amount", "notes", "payment_method",
 ]
 PURCHASE_ITEM_HEADERS = [
     "item_id", "purchase_id", "product_id", "product_name", "quantity", "unit_cost", "line_total",
@@ -286,6 +286,13 @@ def ensure_workbook_schema():
                 ws_inv2.cell(row=1, column=ws_inv2.max_column + 1).value = col_name
                 changed = True
                 inv_headers.append(col_name)
+        # Add payment_method column to Purchases if missing
+        if "Purchases" in wb.sheetnames:
+            ws_pur = wb["Purchases"]
+            pur_headers = [ws_pur.cell(row=1, column=c).value for c in range(1, ws_pur.max_column + 1)]
+            if "payment_method" not in pur_headers:
+                ws_pur.cell(row=1, column=ws_pur.max_column + 1).value = "payment_method"
+                changed = True
         if changed:
             _save(wb)
         wb.close()
@@ -1656,16 +1663,17 @@ def supplier_lookup():
 
 # ── Purchase Invoices ─────────────────────────────────────────────────
 
-def create_purchase_invoice(supplier_id, items, notes=""):
+def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit"):
     """
     Receive stock from a supplier.
     items: list of {product_id, quantity, unit_cost}
-    - Increases product stock
-    - Updates product purchase_price and last_supplier_id
-    - Creates purchase invoice + items
-    - Adds debit to supplier ledger
+    payment_method: 'credit' (unpaid -> owe the supplier), 'cash' or 'bank'
+    (paid now -> reduces Cash/Bank, no payable).
     """
     sid = int(supplier_id)
+    payment_method = (payment_method or "credit").strip().lower()
+    if payment_method not in ("credit", "cash", "bank"):
+        payment_method = "credit"
     with _lock:
         wb = _open()
         ws_prod = wb["Products"]
@@ -1715,14 +1723,16 @@ def create_purchase_invoice(supplier_id, items, notes=""):
             prow[10].value = sid
 
         total_amount = round(total_amount, 2)
-        ws_purch.append([purchase_id, sid, datetime.now(), total_amount, (notes or "").strip()])
+        ws_purch.append([purchase_id, sid, datetime.now(), total_amount,
+                         (notes or "").strip(), payment_method])
         for entry in line_entries:
             ws_pitems.append(entry)
 
-        # Supplier ledger debit
-        sl_id = _next_id(ws_sl)
-        ws_sl.append([sl_id, sid, purchase_id, "debit", total_amount,
-                      f"Purchase invoice #{purchase_id}", datetime.now()])
+        # Only a credit (unpaid) purchase creates a payable in the supplier ledger.
+        if payment_method == "credit":
+            sl_id = _next_id(ws_sl)
+            ws_sl.append([sl_id, sid, purchase_id, "debit", total_amount,
+                          f"Purchase invoice #{purchase_id}", datetime.now()])
 
         _save(wb)
         wb.close()
@@ -2404,7 +2414,7 @@ def sync_journal_from_operations():
     posted. Credit sales are recorded only once the customer has paid for them
     (cash basis for credit). Idempotent. Returns count posted."""
     acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
-    CASH, AR, INV, AP = acc["1000"], acc["1100"], acc["1200"], acc["2000"]
+    CASH, BANK, AR, INV, AP = acc["1000"], acc["1010"], acc["1100"], acc["1200"], acc["2000"]
     TAX, SALES, COGS = acc["2100"], acc["4000"], acc["5000"]
     existing = _existing_journal_sources()
     books_start = get_books_start()
@@ -2446,7 +2456,8 @@ def sync_journal_from_operations():
             lines.append({"account_id": INV, "credit": cogs})
         pending.append((inv.get("created_at"), f"Sale INV-{sid}", "sale", sid, lines))
 
-    # Purchases (stock received) -> Dr Inventory, Cr Accounts Payable
+    # Purchases (stock received). Dr Inventory; credit AP (unpaid) or Cash/Bank (paid).
+    _pay_acct = {"credit": AP, "cash": CASH, "bank": BANK}
     for p in get_all_purchase_invoices():
         pid = int(p["purchase_id"])
         if ("purchase", str(pid)) in existing:
@@ -2456,9 +2467,11 @@ def sync_journal_from_operations():
         total = round(float(p.get("total_amount") or 0), 2)
         if total <= 0:
             continue
+        pm = str(p.get("payment_method") or "credit").strip().lower()
+        credit_acct = _pay_acct.get(pm, AP)
         pending.append((p.get("created_at"), f"Purchase PINV-{pid}", "purchase", pid,
                         [{"account_id": INV, "debit": total},
-                         {"account_id": AP, "credit": total}]))
+                         {"account_id": credit_acct, "credit": total}]))
 
     # Supplier payments -> Dr Accounts Payable, Cr Cash
     for e in get_supplier_ledger_entries():

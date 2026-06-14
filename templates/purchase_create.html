@@ -28,10 +28,22 @@
                             {% endfor %}
                         </select>
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Note (optional)</label>
-                        <input type="text" id="noteInput" class="form-control" placeholder="e.g. Batch #, delivery ref">
+                    <div class="col-md-3">
+                        <label class="form-label">Payment</label>
+                        <select class="form-select" id="paymentMethod">
+                            <option value="credit" selected>On credit (unpaid)</option>
+                            <option value="cash">Paid — Cash</option>
+                            <option value="bank">Paid — Bank</option>
+                        </select>
                     </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Note (optional)</label>
+                        <input type="text" id="noteInput" class="form-control" placeholder="e.g. Batch #">
+                    </div>
+                </div>
+                <div class="form-text mt-1">
+                    <i class="bi bi-info-circle"></i> "On credit" adds to what you owe the supplier.
+                    "Cash"/"Bank" reduces that account on the balance sheet now.
                 </div>
             </div>
         </div>
@@ -361,6 +373,7 @@ async function submitPurchase() {
     const payload = {
         supplier_id: parseInt(supplier_id),
         notes: document.getElementById('noteInput').value,
+        payment_method: document.getElementById('paymentMethod').value,
         items: cart.map(c => ({ product_id: c.product_id, quantity: c.qty, unit_cost: c.price }))
     };
     try {
