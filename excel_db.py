@@ -313,6 +313,25 @@ def _next_id(ws):
     return max_id + 1
 
 
+def _to_float(val, default=0.0):
+    """Parse a form value to float; blank/None/invalid -> default."""
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _to_int(val, default=0):
+    if val is None or val == "":
+        return default
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return default
+
+
 def _row_to_dict(headers, row):
     d = {}
     for i, h in enumerate(headers):
@@ -378,10 +397,10 @@ def add_product(data):
         ws.append([
             pid,
             data["name"],
-            float(data.get("purchase_price", 0)),
-            float(data.get("counter_price", 0)),
-            float(data.get("retail_price", 0)),
-            int(data["quantity"]),
+            _to_float(data.get("purchase_price")),
+            _to_float(data.get("counter_price")),
+            _to_float(data.get("retail_price")),
+            _to_int(data.get("quantity")),
             data.get("barcode", ""),
             expiry,
             data.get("category", ""),
@@ -399,10 +418,10 @@ def update_product(product_id, data):
         for row in ws.iter_rows(min_row=2):
             if row[0].value is not None and int(row[0].value) == int(product_id):
                 row[1].value = data["name"]
-                row[2].value = float(data.get("purchase_price", 0))
-                row[3].value = float(data.get("counter_price", 0))
-                row[4].value = float(data.get("retail_price", 0))
-                row[5].value = int(data["quantity"])
+                row[2].value = _to_float(data.get("purchase_price"))
+                row[3].value = _to_float(data.get("counter_price"))
+                row[4].value = _to_float(data.get("retail_price"))
+                row[5].value = _to_int(data.get("quantity"))
                 row[6].value = data.get("barcode", "")
                 expiry = data.get("expiry_date")
                 if isinstance(expiry, str) and expiry:

@@ -312,6 +312,24 @@ def normalize_customer_id(val):
         return None
 
 
+def _to_float(val, default=0.0):
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _to_int(val, default=0):
+    if val is None or val == "":
+        return default
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return default
+
+
 def _normalize_date(val):
     if val is None or val == "":
         return None
@@ -374,10 +392,10 @@ def add_product(data):
             """, (
                 _tid(),
                 data["name"],
-                float(data.get("purchase_price", 0)),
-                float(data.get("counter_price", 0)),
-                float(data.get("retail_price", 0)),
-                int(data["quantity"]),
+                _to_float(data.get("purchase_price")),
+                _to_float(data.get("counter_price")),
+                _to_float(data.get("retail_price")),
+                _to_int(data.get("quantity")),
                 data.get("barcode", ""),
                 expiry,
                 data.get("category", ""),
@@ -402,10 +420,10 @@ def update_product(product_id, data):
                 WHERE product_id = %s AND tenant_id = %s
             """, (
                 data["name"],
-                float(data.get("purchase_price", 0)),
-                float(data.get("counter_price", 0)),
-                float(data.get("retail_price", 0)),
-                int(data["quantity"]),
+                _to_float(data.get("purchase_price")),
+                _to_float(data.get("counter_price")),
+                _to_float(data.get("retail_price")),
+                _to_int(data.get("quantity")),
                 data.get("barcode", ""),
                 expiry,
                 data.get("category", ""),
