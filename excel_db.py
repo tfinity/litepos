@@ -2370,9 +2370,39 @@ def _existing_journal_sources():
     return out
 
 
+def _realized_credit_invoice_ids():
+    """Credit invoices considered paid: a customer's payments cover them oldest
+    first. Returns the set of invoice_ids fully covered by received payments."""
+    paid_by_cust = {}
+    for e in get_credit_ledger():
+        if e.get("type") == "credit":
+            cid = normalize_customer_id(e.get("customer_id"))
+            if cid is not None:
+                paid_by_cust[cid] = paid_by_cust.get(cid, 0.0) + float(e.get("amount") or 0)
+    credit_by_cust = {}
+    for inv in get_all_invoices():
+        if str(inv.get("payment_method") or "").strip().lower() == "credit":
+            cid = normalize_customer_id(inv.get("customer_id"))
+            if cid is not None:
+                credit_by_cust.setdefault(cid, []).append(inv)
+    realized = set()
+    for cid, invs in credit_by_cust.items():
+        invs.sort(key=lambda x: int(x["invoice_id"]))
+        running = 0.0
+        tp = round(paid_by_cust.get(cid, 0.0), 2)
+        for inv in invs:
+            running = round(running + float(inv.get("total") or 0), 2)
+            if running <= tp:
+                realized.add(int(inv["invoice_id"]))
+            else:
+                break
+    return realized
+
+
 def sync_journal_from_operations():
-    """Generate journal entries for sales, purchases, supplier payments and
-    customer payments that have not been posted yet. Idempotent. Returns count posted."""
+    """Generate journal entries for sales, purchases and supplier payments not yet
+    posted. Credit sales are recorded only once the customer has paid for them
+    (cash basis for credit). Idempotent. Returns count posted."""
     acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
     CASH, AR, INV, AP = acc["1000"], acc["1100"], acc["1200"], acc["2000"]
     TAX, SALES, COGS = acc["2100"], acc["4000"], acc["5000"]
@@ -2385,24 +2415,28 @@ def sync_journal_from_operations():
         d = val.date() if isinstance(val, datetime) else val
         return d is None or d >= books_start
 
+    realized = _realized_credit_invoice_ids()
     pending = []  # (date, description, source_type, source_id, [lines])
 
-    # Sales (active invoices only)
+    # Sales: cash sales post at once; a credit sale posts only once it is paid.
     for inv in get_all_invoices():
         sid = int(inv["invoice_id"])
         if ("sale", str(sid)) in existing:
             continue
         if not _after_start(inv.get("created_at")):
             continue
+        is_credit = str(inv.get("payment_method") or "").strip().lower() == "credit"
+        if is_credit and sid not in realized:
+            continue  # unpaid credit sale -> stays off the balance sheet
         items = get_invoice_items(sid)
         cogs = round(sum(float(it["purchase_price"] or 0) * int(it["quantity"] or 0)
                          for it in items), 2)
         net = round(float(inv.get("subtotal") or 0) - float(inv.get("discount_total") or 0), 2)
         tax = round(float(inv.get("tax_amount") or 0), 2)
         total = round(float(inv.get("total") or 0), 2)
-        is_credit = str(inv.get("payment_method") or "").strip().lower() == "credit"
+        # Recorded as cash received (a realized credit sale has now been paid).
         lines = [
-            {"account_id": AR if is_credit else CASH, "debit": total},
+            {"account_id": CASH, "debit": total},
             {"account_id": SALES, "credit": net},
         ]
         if tax > 0:
@@ -2442,21 +2476,9 @@ def sync_journal_from_operations():
                         [{"account_id": AP, "debit": amt},
                          {"account_id": CASH, "credit": amt}]))
 
-    # Customer credit repayments -> Dr Cash, Cr Accounts Receivable
-    for e in get_credit_ledger():
-        if e.get("type") != "credit":
-            continue
-        eid = int(e["entry_id"])
-        if ("customer_payment", str(eid)) in existing:
-            continue
-        if not _after_start(e.get("created_at")):
-            continue
-        amt = round(float(e.get("amount") or 0), 2)
-        if amt <= 0:
-            continue
-        pending.append((e.get("created_at"), "Customer payment", "customer_payment", eid,
-                        [{"account_id": CASH, "debit": amt},
-                         {"account_id": AR, "credit": amt}]))
+    # Customer credit repayments are NOT posted separately: the cash for a credit
+    # sale enters the books when that sale is recognised (above), keeping the
+    # balance sheet on a cash basis for credit.
 
     if not pending:
         return 0
