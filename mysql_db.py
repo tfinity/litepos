@@ -167,12 +167,16 @@ def init_workbook():
                     entry_id    INT AUTO_INCREMENT PRIMARY KEY,
                     customer_id INT,
                     invoice_id  INT,
-                    type        ENUM('debit','credit') NOT NULL,
+                    type        VARCHAR(20) NOT NULL,
                     amount      DECIMAL(12,2),
                     note        TEXT,
                     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            try:
+                cur.execute("ALTER TABLE credit_ledger MODIFY type VARCHAR(20) NOT NULL")
+            except Exception:
+                pass  # already widened
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS suppliers (
                     supplier_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -216,12 +220,16 @@ def init_workbook():
                     entry_id    INT AUTO_INCREMENT PRIMARY KEY,
                     supplier_id INT NOT NULL,
                     purchase_id INT,
-                    type        ENUM('debit','credit') NOT NULL,
+                    type        VARCHAR(20) NOT NULL,
                     amount      DECIMAL(12,2),
                     note        TEXT,
                     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            try:
+                cur.execute("ALTER TABLE supplier_ledger MODIFY type VARCHAR(20) NOT NULL")
+            except Exception:
+                pass  # already widened
             # Add last_supplier_id to products if not exists
             try:
                 cur.execute("ALTER TABLE products ADD COLUMN last_supplier_id INT DEFAULT NULL")

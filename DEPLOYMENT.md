@@ -139,15 +139,39 @@ rsync -avz -e "ssh -p 22" data.xlsx root@<server-ip>:/var/www/pos/app/incoming.x
 - Drag `data.xlsx` into `/var/www/pos/app/` and rename to `incoming.xlsx`.
 
 ### Option 4 — Upload link + `wget` (works even when SSH/SFTP is blocked)
-This is the reliable fallback when port 22 is blocked on your network:
-1. Upload `data.xlsx` somewhere that gives a **direct download link**
-   (Google Drive → "anyone with link", Dropbox, WeTransfer, `0x0.st`, etc.).
-2. On the server, pull it down:
-   ```bash
-   cd /var/www/pos/app
-   wget "https://<direct-download-link>" -O incoming.xlsx
-   ```
-   (For Google Drive, use a direct-download URL, or `gdown <file-id>`.)
+This is the reliable fallback when port 22 is blocked on your network. The catch:
+Drive/Dropbox/WeTransfer share links open a **webpage**, so `wget` would grab the
+HTML page, not the file. Convert the link to a **direct download** first:
+
+**Dropbox** — change the trailing `?dl=0` to `?dl=1`:
+```bash
+cd /var/www/pos/app
+wget "https://www.dropbox.com/s/xxxxx/data.xlsx?dl=1" -O incoming.xlsx
+```
+
+**Google Drive** — share "anyone with the link", take the `FILE_ID` out of
+`https://drive.google.com/file/d/FILE_ID/view`, then:
+```bash
+cd /var/www/pos/app
+wget "https://drive.google.com/uc?export=download&id=FILE_ID" -O incoming.xlsx
+# (large files only: use `gdown FILE_ID` to skip the virus-scan page)
+```
+
+Always verify it's a real workbook, not a saved HTML page:
+```bash
+ls -lh incoming.xlsx && file incoming.xlsx   # expect "Excel" / "Zip", not "HTML"
+```
+
+> ⚠️ Don't use public paste hosts (0x0.st, file.io, transfer.sh) for real client
+> data — those URLs are public. Use a private Dropbox/Drive link or VPN + scp.
+
+### Option 4b — VPN, then `scp`/SFTP (when the ISP blocks port 22)
+If `scp`/SFTP just time out, your network is blocking SSH. Turn on a free VPN
+(Cloudflare WARP `1.1.1.1`, or ProtonVPN) on your local machine, then the normal
+tools work again:
+```bash
+scp data.xlsx root@<server-ip>:/var/www/pos/app/incoming.xlsx
+```
 
 ### Option 5 — Hostinger panel
 Hostinger's **File Manager** (or the browser-based VPS console) can upload the
