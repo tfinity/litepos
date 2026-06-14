@@ -74,6 +74,8 @@ partners with original IDs.
 **Verify:** the shop's admin logs in with their existing credentials and sees
 their data; the super-admin lands on the Businesses screen; do one test sale.
 
+> Need to get the `data.xlsx` onto the server first? See section **G**.
+
 ---
 
 ## D. Adding more businesses later
@@ -107,6 +109,54 @@ FLUSH PRIVILEGES;
 ```
 Then update `/var/www/pos/app/.env` (`MYSQL_PASSWORD`, and rotate `SECRET_KEY`)
 and `systemctl restart pos`.
+
+---
+
+## G. Transferring a file (e.g. `data.xlsx`) to the server
+
+Pick whichever works on your network. The server here is reachable at
+`<server-ip>` (the real VPS IP, not the Cloudflare-proxied domain), and the app
+lives in `/var/www/pos/app`.
+
+### Option 1 — `scp` (simplest, if SSH works)
+Run from your **local** machine, in the folder that has `data.xlsx`:
+```bash
+scp data.xlsx root@<server-ip>:/var/www/pos/app/incoming.xlsx
+```
+If your ISP/network blocks port 22 (the `scp` just times out), use the alternate
+SSH port if you configured one:
+```bash
+scp -P 2222 data.xlsx root@<server-ip>:/var/www/pos/app/incoming.xlsx
+```
+
+### Option 2 — `rsync` (resumable, good for big files)
+```bash
+rsync -avz -e "ssh -p 22" data.xlsx root@<server-ip>:/var/www/pos/app/incoming.xlsx
+```
+
+### Option 3 — SFTP GUI (FileZilla / Cyberduck — no terminal)
+- Host: `sftp://<server-ip>`  ·  User: `root`  ·  Port: `22` (or `2222`)
+- Drag `data.xlsx` into `/var/www/pos/app/` and rename to `incoming.xlsx`.
+
+### Option 4 — Upload link + `wget` (works even when SSH/SFTP is blocked)
+This is the reliable fallback when port 22 is blocked on your network:
+1. Upload `data.xlsx` somewhere that gives a **direct download link**
+   (Google Drive → "anyone with link", Dropbox, WeTransfer, `0x0.st`, etc.).
+2. On the server, pull it down:
+   ```bash
+   cd /var/www/pos/app
+   wget "https://<direct-download-link>" -O incoming.xlsx
+   ```
+   (For Google Drive, use a direct-download URL, or `gdown <file-id>`.)
+
+### Option 5 — Hostinger panel
+Hostinger's **File Manager** (or the browser-based VPS console) can upload the
+file straight into `/var/www/pos/app/` without any terminal.
+
+**After upload**, confirm it landed and is intact:
+```bash
+ls -lh /var/www/pos/app/incoming.xlsx
+```
 
 ---
 
