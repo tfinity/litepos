@@ -878,6 +878,31 @@ def api_suppliers_create():
     return jsonify({"supplier": {"supplier_id": s["supplier_id"], "name": s["name"]}})
 
 
+@app.route("/api/products", methods=["POST"])
+@login_required
+def api_products_create():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name is required"}), 400
+    pid = excel_db.add_product({
+        "name": name,
+        "purchase_price": data.get("purchase_price", 0),
+        "counter_price": data.get("counter_price", 0),
+        "retail_price": data.get("retail_price", 0),
+        "quantity": data.get("quantity", 0),
+        "barcode": data.get("barcode", ""),
+        "category": data.get("category", ""),
+    })
+    p = excel_db.get_product(pid)
+    return jsonify({"product": {
+        "product_id": p["product_id"], "name": p["name"],
+        "purchase_price": float(p.get("purchase_price") or 0),
+        "counter_price": float(p.get("counter_price") or 0),
+        "retail_price": float(p.get("retail_price") or 0),
+    }})
+
+
 # ── Credit Ledger ─────────────────────────────────────────────────────
 
 @app.route("/credit-ledger")
