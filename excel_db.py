@@ -1663,17 +1663,27 @@ def supplier_lookup():
 
 # ── Purchase Invoices ─────────────────────────────────────────────────
 
-def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit"):
+def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit",
+                            purchase_date=None):
     """
     Receive stock from a supplier.
     items: list of {product_id, quantity, unit_cost}
     payment_method: 'credit' (unpaid -> owe the supplier), 'cash' or 'bank'
     (paid now -> reduces Cash/Bank, no payable).
+    purchase_date: optional date (defaults to now) so past purchases can be backdated.
     """
     sid = int(supplier_id)
     payment_method = (payment_method or "credit").strip().lower()
     if payment_method not in ("credit", "cash", "bank"):
         payment_method = "credit"
+    when = datetime.now()
+    if purchase_date:
+        if isinstance(purchase_date, str):
+            when = datetime.combine(date.fromisoformat(purchase_date), datetime.min.time())
+        elif isinstance(purchase_date, datetime):
+            when = purchase_date
+        elif isinstance(purchase_date, date):
+            when = datetime.combine(purchase_date, datetime.min.time())
     with _lock:
         wb = _open()
         ws_prod = wb["Products"]
@@ -1723,16 +1733,19 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             prow[10].value = sid
 
         total_amount = round(total_amount, 2)
-        ws_purch.append([purchase_id, sid, datetime.now(), total_amount,
+        ws_purch.append([purchase_id, sid, when, total_amount,
                          (notes or "").strip(), payment_method])
         for entry in line_entries:
             ws_pitems.append(entry)
 
-        # Only a credit (unpaid) purchase creates a payable in the supplier ledger.
-        if payment_method == "credit":
-            sl_id = _next_id(ws_sl)
-            ws_sl.append([sl_id, sid, purchase_id, "debit", total_amount,
-                          f"Purchase invoice #{purchase_id}", datetime.now()])
+        # Always record the purchase in the supplier ledger (relationship history).
+        sl_id = _next_id(ws_sl)
+        ws_sl.append([sl_id, sid, purchase_id, "debit", total_amount,
+                      f"Purchase invoice #{purchase_id}", when])
+        # If paid now, also record the payment so the supplier balance nets to zero.
+        if payment_method in ("cash", "bank"):
+            ws_sl.append([sl_id + 1, sid, purchase_id, "credit", total_amount,
+                          f"Paid by {payment_method}", when])
 
         _save(wb)
         wb.close()
@@ -2473,9 +2486,12 @@ def sync_journal_from_operations():
                         [{"account_id": INV, "debit": total},
                          {"account_id": credit_acct, "credit": total}]))
 
-    # Supplier payments -> Dr Accounts Payable, Cr Cash
+    # Supplier payments -> Dr Accounts Payable, Cr Cash. Skip credits tied to a
+    # purchase (a cash/bank purchase already credited Cash/Bank in its own entry).
     for e in get_supplier_ledger_entries():
         if e.get("type") != "credit":
+            continue
+        if e.get("purchase_id") not in (None, ""):
             continue
         eid = int(e["entry_id"])
         if ("supplier_payment", str(eid)) in existing:

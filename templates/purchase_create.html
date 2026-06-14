@@ -36,9 +36,13 @@
                             <option value="bank">Paid — Bank</option>
                         </select>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-3 mt-2">
+                        <label class="form-label">Date</label>
+                        <input type="date" id="purchaseDate" class="form-control" value="{{ today_iso }}">
+                    </div>
+                    <div class="col-md-9 mt-2">
                         <label class="form-label">Note (optional)</label>
-                        <input type="text" id="noteInput" class="form-control" placeholder="e.g. Batch #">
+                        <input type="text" id="noteInput" class="form-control" placeholder="e.g. Batch #, delivery ref">
                     </div>
                 </div>
                 <div class="form-text mt-1">
@@ -374,6 +378,7 @@ async function submitPurchase() {
         supplier_id: parseInt(supplier_id),
         notes: document.getElementById('noteInput').value,
         payment_method: document.getElementById('paymentMethod').value,
+        purchase_date: document.getElementById('purchaseDate').value || null,
         items: cart.map(c => ({ product_id: c.product_id, quantity: c.qty, unit_cost: c.price }))
     };
     try {

@@ -1116,19 +1116,22 @@ def purchase_create():
         items = data.get("items", [])
         notes = data.get("notes", "")
         payment_method = data.get("payment_method", "credit")
+        purchase_date = data.get("purchase_date") or None
         if not supplier_id:
             return jsonify({"error": "Supplier is required"}), 400
         if not items:
             return jsonify({"error": "No items added"}), 400
         try:
             purchase_id = excel_db.create_purchase_invoice(
-                supplier_id, items, notes, payment_method=payment_method)
+                supplier_id, items, notes, payment_method=payment_method,
+                purchase_date=purchase_date)
             return jsonify({"purchase_id": purchase_id})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
     suppliers = excel_db.get_all_suppliers()
     products = excel_db.get_all_products()
-    return render_template("purchase_create.html", suppliers=suppliers, products=products)
+    return render_template("purchase_create.html", suppliers=suppliers, products=products,
+                           today_iso=date.today().isoformat())
 
 
 @app.route("/purchases/<int:purchase_id>")

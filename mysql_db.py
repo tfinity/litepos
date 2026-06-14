@@ -1334,12 +1334,21 @@ def supplier_lookup():
 
 # ── Purchase Invoices ─────────────────────────────────────────────────
 
-def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit"):
+def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit",
+                            purchase_date=None):
     sid = int(supplier_id)
     tid = _tid()
     payment_method = (payment_method or "credit").strip().lower()
     if payment_method not in ("credit", "cash", "bank"):
         payment_method = "credit"
+    when = datetime.now()
+    if purchase_date:
+        if isinstance(purchase_date, str):
+            when = datetime.combine(date.fromisoformat(purchase_date), datetime.min.time())
+        elif isinstance(purchase_date, datetime):
+            when = purchase_date
+        elif isinstance(purchase_date, date):
+            when = datetime.combine(purchase_date, datetime.min.time())
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT supplier_id FROM suppliers WHERE supplier_id=%s AND tenant_id=%s", (sid, tid))
@@ -1377,7 +1386,7 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             cur.execute("""
                 INSERT INTO purchase_invoices (tenant_id, supplier_id, created_at, total_amount, notes, payment_method)
                 VALUES (%s,%s,%s,%s,%s,%s)
-            """, (tid, sid, datetime.now(), total_amount, (notes or "").strip(), payment_method))
+            """, (tid, sid, when, total_amount, (notes or "").strip(), payment_method))
             purchase_id = cur.lastrowid
 
             for pid, pname, qty, uc, lt in line_entries:
@@ -1387,12 +1396,17 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
                     VALUES (%s,%s,%s,%s,%s,%s,%s)
                 """, (tid, purchase_id, pid, pname, qty, uc, lt))
 
-            # Only a credit (unpaid) purchase creates a payable in the supplier ledger.
-            if payment_method == "credit":
+            # Always record the purchase in the supplier ledger (relationship history).
+            cur.execute("""
+                INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
+                VALUES (%s,%s,%s,'debit',%s,%s,%s)
+            """, (tid, sid, purchase_id, total_amount, f"Purchase invoice #{purchase_id}", when))
+            # If paid now, also record the payment so the supplier balance nets to zero.
+            if payment_method in ("cash", "bank"):
                 cur.execute("""
                     INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
-                    VALUES (%s,%s,%s,'debit',%s,%s,%s)
-                """, (tid, sid, purchase_id, total_amount, f"Purchase invoice #{purchase_id}", datetime.now()))
+                    VALUES (%s,%s,%s,'credit',%s,%s,%s)
+                """, (tid, sid, purchase_id, total_amount, f"Paid by {payment_method}", when))
 
     return purchase_id
 
@@ -2018,6 +2032,8 @@ def sync_journal_from_operations():
     for e in get_supplier_ledger_entries():
         if e.get("type") != "credit":
             continue
+        if e.get("purchase_id") not in (None, ""):
+            continue  # immediate purchase payment, already credited in the purchase entry
         eid = int(e["entry_id"])
         if ("supplier_payment", str(eid)) in existing or not _after_start(e.get("created_at")):
             continue
