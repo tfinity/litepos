@@ -95,7 +95,8 @@ def _user_in_my_tenant(user_id):
 
 _PUBLIC_ENDPOINTS = {"login", "setup", "static"}
 # Endpoints a super-admin (no tenant) is allowed to use.
-_SUPERADMIN_ENDPOINTS = {"accounts", "account_create", "account_toggle", "logout"}
+_SUPERADMIN_ENDPOINTS = {"accounts", "account_create", "account_toggle",
+                         "account_add_user", "account_reset_password", "logout"}
 
 
 @app.before_request
@@ -222,6 +223,46 @@ def account_toggle(tenant_id):
     if t:
         excel_db.set_tenant_active(tenant_id, not t["is_active"])
         flash(f"Business '{t['name']}' {'disabled' if t['is_active'] else 'enabled'}.", "success")
+    return redirect(url_for("accounts"))
+
+
+@app.route("/accounts/<int:tenant_id>/add-user", methods=["POST"])
+@login_required
+@super_admin_required
+def account_add_user(tenant_id):
+    t = excel_db.get_tenant(tenant_id)
+    if not t:
+        flash("Business not found.", "danger")
+        return redirect(url_for("accounts"))
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    role = request.form.get("role", "admin")
+    role = role if role in ("admin", "staff") else "admin"
+    if not username or len(password) < 6:
+        flash("Username and a password of at least 6 characters are required.", "danger")
+        return redirect(url_for("accounts"))
+    if excel_db.get_user_by_username(username):
+        flash("That username is already taken.", "danger")
+        return redirect(url_for("accounts"))
+    excel_db.add_user(username, generate_password_hash(password), role=role, tenant_id=tenant_id)
+    flash(f"Login '{username}' added to {t['name']}.", "success")
+    return redirect(url_for("accounts"))
+
+
+@app.route("/accounts/users/<int:user_id>/reset-password", methods=["POST"])
+@login_required
+@super_admin_required
+def account_reset_password(user_id):
+    target = excel_db.get_user_by_id(user_id)
+    if not target or target.get("role") == "super_admin":
+        flash("User not found.", "danger")
+        return redirect(url_for("accounts"))
+    password = request.form.get("password", "")
+    if len(password) < 6:
+        flash("Password must be at least 6 characters.", "danger")
+        return redirect(url_for("accounts"))
+    excel_db.update_user_password(user_id, generate_password_hash(password))
+    flash(f"Password reset for '{target['username']}'.", "success")
     return redirect(url_for("accounts"))
 
 
