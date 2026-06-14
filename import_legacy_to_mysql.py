@@ -179,14 +179,19 @@ def main():
             sql = f"INSERT INTO {table} ({cols_sql}) VALUES ({placeholders})"
             for r in rows:
                 cur.execute(sql, [tid] + [r[c] for c in columns])
-            # bump AUTO_INCREMENT past the imported ids
-            cur.execute(f"SELECT MAX({pk}) AS m FROM {table}")
-            mx = cur.fetchone()["m"] or 0
-            cur.execute(f"ALTER TABLE {table} AUTO_INCREMENT = {mx + 1}")
             print(f"  {sheet} -> {table}: {len(rows)} rows")
             total += len(rows)
 
+        # Commit the data atomically FIRST. AUTO_INCREMENT resets are DDL (they
+        # implicitly commit), so they must run AFTER the transaction — otherwise a
+        # later failure would leave a half-imported, already-committed database.
         conn.commit()
+
+        for sheet, table, columns, pk in _SPEC:
+            cur.execute(f"SELECT MAX({pk}) AS m FROM {table}")
+            mx = cur.fetchone()["m"] or 0
+            cur.execute(f"ALTER TABLE {table} AUTO_INCREMENT = {mx + 1}")
+
         print(f"\nImport complete: {total} rows into tenant #{tid}.")
         print("Log in as the super-admin, or as the shop's existing admin if you imported users.")
     except Exception as e:
