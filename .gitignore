@@ -27,3 +27,6 @@ GEMINI.md
 .mcp.json
 .opencode.json
 .cursorrules
+
+# Local notes / credentials — never commit
+memory/
