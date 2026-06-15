@@ -2672,6 +2672,15 @@ def _delete_opening_entries(wb, source_types=("opening",)):
             ws_jl.delete_rows(idx, 1)
 
 
+def clear_opening_balances():
+    """Remove opening balances + auto-synced entries (next view re-syncs fresh)."""
+    with _lock:
+        wb = _open()
+        _delete_opening_entries(wb, ("opening",) + _AUTO_SYNCED_SOURCES)
+        _save(wb)
+        wb.close()
+
+
 def set_opening_balances(start_date, balances, created_by="system"):
     """Set/replace opening balances as of start_date.
     balances: dict of account code -> amount, e.g. {'1000': cash, '1200': inventory, ...}.

@@ -1956,6 +1956,16 @@ def set_opening_balances(start_date, balances, created_by="system"):
             return eid
 
 
+def clear_opening_balances():
+    """Remove opening balances + auto-synced entries (next view re-syncs fresh)."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """DELETE FROM journal_entries WHERE tenant_id = %s AND source_type IN
+                   ('opening','sale','purchase','supplier_payment','customer_payment')""",
+                (_tid(),))
+
+
 def _existing_journal_sources():
     out = set()
     with _conn() as conn:

@@ -1422,6 +1422,14 @@ def opening_balances():
                            existing=existing, books_start=books_start)
 
 
+@app.route("/accounting/opening-balances/clear", methods=["POST"])
+@login_required
+def opening_balances_clear():
+    excel_db.clear_opening_balances()
+    flash("Opening balances cleared.", "success")
+    return redirect(url_for("opening_balances"))
+
+
 @app.route("/accounting/balance-sheet")
 @login_required
 def balance_sheet():
