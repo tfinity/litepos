@@ -1117,14 +1117,15 @@ def purchase_create():
         notes = data.get("notes", "")
         payment_method = data.get("payment_method", "credit")
         purchase_date = data.get("purchase_date") or None
+        direct_amount = data.get("direct_amount") or None
         if not supplier_id:
             return jsonify({"error": "Supplier is required"}), 400
-        if not items:
-            return jsonify({"error": "No items added"}), 400
+        if not items and not direct_amount:
+            return jsonify({"error": "Add items, or enter a direct amount"}), 400
         try:
             purchase_id = excel_db.create_purchase_invoice(
                 supplier_id, items, notes, payment_method=payment_method,
-                purchase_date=purchase_date)
+                purchase_date=purchase_date, direct_amount=direct_amount)
             return jsonify({"purchase_id": purchase_id})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400

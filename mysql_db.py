@@ -1343,7 +1343,9 @@ def supplier_lookup():
 # ── Purchase Invoices ─────────────────────────────────────────────────
 
 def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit",
-                            purchase_date=None):
+                            purchase_date=None, direct_amount=None):
+    """direct_amount: when no items, record the purchase as a lump total only
+    (old purchase where products aren't remembered)."""
     sid = int(supplier_id)
     tid = _tid()
     payment_method = (payment_method or "credit").strip().lower()
@@ -1390,7 +1392,11 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
                     (new_qty, new_cost, sid, pid, tid)
                 )
 
+            if not items and direct_amount is not None:
+                total_amount = float(direct_amount)
             total_amount = round(total_amount, 2)
+            if total_amount <= 0:
+                raise ValueError("Purchase total must be positive.")
             cur.execute("""
                 INSERT INTO purchase_invoices (tenant_id, supplier_id, created_at, total_amount, notes, payment_method)
                 VALUES (%s,%s,%s,%s,%s,%s)
@@ -1600,18 +1606,20 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
 # ── Double-entry accounting: data layer ──────────────────────────────
 
 def seed_chart_of_accounts():
+    """Insert any standard accounts missing for the tenant (idempotent by code)."""
     tid = get_current_tenant()
     if tid is None:
         return  # no tenant context -> nothing to seed
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS n FROM accounts WHERE tenant_id = %s", (tid,))
-            if cur.fetchone()["n"] > 0:
-                return
-            cur.executemany(
-                "INSERT INTO accounts (tenant_id, code, name, type, is_system) VALUES (%s,%s,%s,%s,%s)",
-                [(tid, c, n, t, 1 if sys else 0) for c, n, t, sys in CHART_OF_ACCOUNTS],
-            )
+            cur.execute("SELECT code FROM accounts WHERE tenant_id = %s", (tid,))
+            existing = {str(r["code"]) for r in cur.fetchall()}
+            to_add = [(tid, c, n, t, 1 if sys else 0)
+                      for c, n, t, sys in CHART_OF_ACCOUNTS if str(c) not in existing]
+            if to_add:
+                cur.executemany(
+                    "INSERT INTO accounts (tenant_id, code, name, type, is_system) VALUES (%s,%s,%s,%s,%s)",
+                    to_add)
 
 
 def get_all_accounts():
@@ -1903,6 +1911,7 @@ def get_opening_balances():
 def set_opening_balances(start_date, balances, created_by="system"):
     if isinstance(start_date, str):
         start_date = date.fromisoformat(start_date)
+    seed_chart_of_accounts()  # auto-heal a missing/partial chart of accounts
     acc = {str(a["code"]): a for a in get_all_accounts()}
     total_assets = 0.0
     total_liab = 0.0
@@ -1988,6 +1997,7 @@ def _realized_credit_invoice_ids():
 
 
 def sync_journal_from_operations():
+    seed_chart_of_accounts()  # auto-heal a missing/partial chart of accounts
     acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
     CASH, BANK, AR, INV, AP = acc["1000"], acc["1010"], acc["1100"], acc["1200"], acc["2000"]
     TAX, SALES, COGS = acc["2100"], acc["4000"], acc["5000"]

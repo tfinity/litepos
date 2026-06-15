@@ -1664,13 +1664,14 @@ def supplier_lookup():
 # ── Purchase Invoices ─────────────────────────────────────────────────
 
 def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit",
-                            purchase_date=None):
+                            purchase_date=None, direct_amount=None):
     """
     Receive stock from a supplier.
     items: list of {product_id, quantity, unit_cost}
     payment_method: 'credit' (unpaid -> owe the supplier), 'cash' or 'bank'
     (paid now -> reduces Cash/Bank, no payable).
     purchase_date: optional date (defaults to now) so past purchases can be backdated.
+    direct_amount: when no items, record the purchase as a lump total only.
     """
     sid = int(supplier_id)
     payment_method = (payment_method or "credit").strip().lower()
@@ -1732,7 +1733,12 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             prow[2].value = new_cost
             prow[10].value = sid
 
+        if not items and direct_amount is not None:
+            total_amount = float(direct_amount)
         total_amount = round(total_amount, 2)
+        if total_amount <= 0:
+            wb.close()
+            raise ValueError("Purchase total must be positive.")
         ws_purch.append([purchase_id, sid, when, total_amount,
                          (notes or "").strip(), payment_method])
         for entry in line_entries:
@@ -2427,6 +2433,7 @@ def sync_journal_from_operations():
     """Generate journal entries for sales, purchases and supplier payments not yet
     posted. Credit sales are recorded only once the customer has paid for them
     (cash basis for credit). Idempotent. Returns count posted."""
+    seed_chart_of_accounts()  # auto-heal a missing/partial chart of accounts
     acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
     CASH, BANK, AR, INV, AP = acc["1000"], acc["1010"], acc["1100"], acc["1200"], acc["2000"]
     TAX, SALES, COGS = acc["2100"], acc["4000"], acc["5000"]
@@ -2671,6 +2678,7 @@ def set_opening_balances(start_date, balances, created_by="system"):
     Owner Capital (3000) is computed as the balancing figure."""
     if isinstance(start_date, str):
         start_date = date.fromisoformat(start_date)
+    seed_chart_of_accounts()  # auto-heal a missing/partial chart of accounts
     acc = {str(a["code"]): a for a in get_all_accounts()}
 
     total_assets = 0.0

@@ -49,6 +49,19 @@
                     <i class="bi bi-info-circle"></i> "On credit" adds to what you owe the supplier.
                     "Cash"/"Bank" reduces that account on the balance sheet now.
                 </div>
+                <hr class="my-2">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="directToggle" onchange="toggleDirect()">
+                    <label class="form-check-label" for="directToggle">
+                        Direct amount only (old purchase, products not known)
+                    </label>
+                </div>
+                <div id="directBox" class="mt-2" style="display:none">
+                    <label class="form-label">Total amount ({{ currency }})</label>
+                    <input type="number" id="directAmount" class="form-control" step="0.01" min="0"
+                           style="max-width:260px" placeholder="e.g. 81000">
+                    <div class="form-text">Records the total against the supplier — no products / stock change.</div>
+                </div>
             </div>
         </div>
 
@@ -367,10 +380,21 @@ function submitQuickSupplier() {
     });
 }
 
+function toggleDirect() {
+    const on = document.getElementById('directToggle').checked;
+    document.getElementById('directBox').style.display = on ? 'block' : 'none';
+}
+
 async function submitPurchase() {
     const supplier_id = document.getElementById('supplierSelect').value;
     if (!supplier_id) { alert('Select a supplier.'); return; }
-    if (!cart.length) { alert('Add at least one item.'); return; }
+    const direct = document.getElementById('directToggle').checked;
+    const directAmount = parseFloat(document.getElementById('directAmount').value) || 0;
+    if (direct) {
+        if (directAmount <= 0) { alert('Enter the total amount.'); return; }
+    } else if (!cart.length) {
+        alert('Add at least one item (or tick "Direct amount only").'); return;
+    }
     const btn = document.getElementById('submitBtn');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
@@ -379,7 +403,8 @@ async function submitPurchase() {
         notes: document.getElementById('noteInput').value,
         payment_method: document.getElementById('paymentMethod').value,
         purchase_date: document.getElementById('purchaseDate').value || null,
-        items: cart.map(c => ({ product_id: c.product_id, quantity: c.qty, unit_cost: c.price }))
+        direct_amount: direct ? directAmount : null,
+        items: direct ? [] : cart.map(c => ({ product_id: c.product_id, quantity: c.qty, unit_cost: c.price }))
     };
     try {
         const res = await fetch('{{ url_for("purchase_create") }}', {
