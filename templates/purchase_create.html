@@ -204,6 +204,10 @@
                         <label class="form-label small">Category</label>
                         <input type="text" class="form-control" id="qpCategory">
                     </div>
+                    <div class="col-6 mb-2">
+                        <label class="form-label small">Expiry date</label>
+                        <input type="date" class="form-control" id="qpExpiry">
+                    </div>
                 </div>
                 <div class="form-text">Stock is added by this purchase — leave opening quantity at 0.</div>
                 <div id="qpError" class="text-danger small mt-2 d-none"></div>
@@ -260,6 +264,7 @@ function submitQuickProduct() {
         counter_price: document.getElementById('qpCounter').value || 0,
         retail_price: document.getElementById('qpRetail').value || 0,
         category: document.getElementById('qpCategory').value || '',
+        expiry_date: document.getElementById('qpExpiry').value || '',
         quantity: 0,
     };
     fetch('/api/products', {
@@ -273,7 +278,7 @@ function submitQuickProduct() {
         // add to the in-memory list and select it
         products.push(data.product);
         selectProduct(data.product.product_id);
-        ['qpName','qpPurchase','qpCounter','qpRetail','qpCategory'].forEach(id => document.getElementById(id).value = '');
+        ['qpName','qpPurchase','qpCounter','qpRetail','qpCategory','qpExpiry'].forEach(id => document.getElementById(id).value = '');
         const modal = bootstrap.Modal.getInstance(document.getElementById('quickProductModal'));
         if (modal) modal.hide();
     })

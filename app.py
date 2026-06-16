@@ -893,6 +893,7 @@ def api_products_create():
         "quantity": data.get("quantity", 0),
         "barcode": data.get("barcode", ""),
         "category": data.get("category", ""),
+        "expiry_date": data.get("expiry_date") or None,
     })
     p = excel_db.get_product(pid)
     return jsonify({"product": {
@@ -1082,13 +1083,14 @@ def supplier_detail(supplier_id):
 def supplier_pay(supplier_id):
     amount_str = request.form.get("amount", "").strip()
     note = request.form.get("note", "").strip()
+    payment_method = request.form.get("payment_method", "cash").strip().lower()
     try:
         amount = float(amount_str)
     except (ValueError, TypeError):
         flash("Invalid amount.", "danger")
         return redirect(url_for("supplier_detail", supplier_id=supplier_id))
     try:
-        excel_db.add_supplier_payment(supplier_id, amount, note)
+        excel_db.add_supplier_payment(supplier_id, amount, note, payment_method)
         flash(f"Payment of {CURRENCY} {amount:.2f} recorded.", "success")
     except ValueError as e:
         flash(str(e), "danger")

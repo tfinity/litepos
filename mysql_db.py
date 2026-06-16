@@ -230,6 +230,10 @@ def init_workbook():
                 cur.execute("ALTER TABLE supplier_ledger MODIFY type VARCHAR(20) NOT NULL")
             except Exception:
                 pass  # already widened
+            try:
+                cur.execute("ALTER TABLE supplier_ledger ADD COLUMN payment_method VARCHAR(20) DEFAULT 'cash'")
+            except Exception:
+                pass  # column already exists
             # Add last_supplier_id to products if not exists
             try:
                 cur.execute("ALTER TABLE products ADD COLUMN last_supplier_id INT DEFAULT NULL")
@@ -1454,19 +1458,20 @@ def get_purchase_invoice_items(purchase_id):
 
 # ── Supplier Ledger ───────────────────────────────────────────────────
 
-def add_supplier_payment(supplier_id, amount, note=""):
+def add_supplier_payment(supplier_id, amount, note="", payment_method="cash"):
     sid = int(supplier_id)
     amount = float(amount)
     if amount <= 0:
         raise ValueError("Amount must be positive.")
     if not get_supplier(sid):
         raise ValueError("Supplier not found.")
+    pm = (payment_method or "cash").strip().lower()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
-                VALUES (%s, %s, NULL, 'credit', %s, %s, %s)
-            """, (_tid(), sid, amount, (note or "").strip(), datetime.now()))
+                INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at, payment_method)
+                VALUES (%s, %s, NULL, 'credit', %s, %s, %s, %s)
+            """, (_tid(), sid, amount, (note or "").strip(), datetime.now(), pm))
             return cur.lastrowid
 
 
@@ -2070,8 +2075,10 @@ def sync_journal_from_operations():
         amt = round(float(e.get("amount") or 0), 2)
         if amt <= 0:
             continue
+        pm = (e.get("payment_method") or "cash").strip().lower()
+        cash_acct = BANK if pm == "bank" else CASH
         pending.append((e.get("created_at"), "Supplier payment", "supplier_payment", eid,
-                        [(AP, amt, 0.0), (CASH, 0.0, amt)]))
+                        [(AP, amt, 0.0), (cash_acct, 0.0, amt)]))
 
     # Customer credit repayments are NOT posted separately: the cash for a credit
     # sale enters the books when that sale is recognised (above), keeping the

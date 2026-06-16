@@ -121,7 +121,7 @@ PURCHASE_ITEM_HEADERS = [
     "item_id", "purchase_id", "product_id", "product_name", "quantity", "unit_cost", "line_total",
 ]
 SUPPLIER_LEDGER_HEADERS = [
-    "entry_id", "supplier_id", "purchase_id", "type", "amount", "note", "created_at",
+    "entry_id", "supplier_id", "purchase_id", "type", "amount", "note", "created_at", "payment_method",
 ]
 
 # ── Double-entry accounting ──────────────────────────────────────────
@@ -1799,13 +1799,14 @@ def get_purchase_invoice_items(purchase_id):
 
 # ── Supplier Ledger ───────────────────────────────────────────────────
 
-def add_supplier_payment(supplier_id, amount, note=""):
+def add_supplier_payment(supplier_id, amount, note="", payment_method="cash"):
     sid = int(supplier_id)
     amount = float(amount)
     if amount <= 0:
         raise ValueError("Amount must be positive.")
     if not get_supplier(sid):
         raise ValueError("Supplier not found.")
+    pm = (payment_method or "cash").strip().lower()
     with _lock:
         wb = _open()
         if "SupplierLedger" not in wb.sheetnames:
@@ -1813,7 +1814,7 @@ def add_supplier_payment(supplier_id, amount, note=""):
         ws_sl = wb["SupplierLedger"]
         entry_id = _next_id(ws_sl)
         ws_sl.append([entry_id, sid, None, "credit", amount,
-                      (note or "").strip(), datetime.now()])
+                      (note or "").strip(), datetime.now(), pm])
         _save(wb)
         wb.close()
     return entry_id
@@ -2509,9 +2510,11 @@ def sync_journal_from_operations():
         amt = round(float(e.get("amount") or 0), 2)
         if amt <= 0:
             continue
+        pm = (e.get("payment_method") or "cash").strip().lower()
+        cash_acct = BANK if pm == "bank" else CASH
         pending.append((e.get("created_at"), "Supplier payment", "supplier_payment", eid,
                         [{"account_id": AP, "debit": amt},
-                         {"account_id": CASH, "credit": amt}]))
+                         {"account_id": cash_acct, "credit": amt}]))
 
     # Customer credit repayments are NOT posted separately: the cash for a credit
     # sale enters the books when that sale is recognised (above), keeping the
