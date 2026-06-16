@@ -68,6 +68,7 @@
                     <th>Type</th>
                     <th>Reference</th>
                     <th>Note</th>
+                    <th>Via</th>
                     <th class="text-end">Debit ({{ currency }})</th>
                     <th class="text-end">Credit ({{ currency }})</th>
                     <th class="text-end">Balance ({{ currency }})</th>
@@ -92,6 +93,13 @@
                         {% endif %}
                     </td>
                     <td>{{ e.note or '—' }}</td>
+                    <td>
+                        {% if e.payment_method == 'bank' %}
+                        <span class="badge bg-info text-dark">Bank</span>
+                        {% elif e.payment_method == 'cash' %}
+                        <span class="badge bg-secondary">Cash</span>
+                        {% else %}—{% endif %}
+                    </td>
                     <td class="text-end text-danger">
                         {% if e.type == 'debit' %}{{ "{:,.2f}".format(e.amount) }}{% else %}—{% endif %}
                     </td>
@@ -104,7 +112,7 @@
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="7" class="text-center text-muted py-4">No ledger entries yet.</td>
+                    <td colspan="8" class="text-center text-muted py-4">No ledger entries yet.</td>
                 </tr>
                 {% endfor %}
             </tbody>
