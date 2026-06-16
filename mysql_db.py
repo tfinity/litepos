@@ -1418,15 +1418,15 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             # Use the user's note if given, else a generic reference.
             debit_note = (notes or "").strip() or f"Purchase invoice #{purchase_id}"
             cur.execute("""
-                INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
-                VALUES (%s,%s,%s,'debit',%s,%s,%s)
+                INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at, payment_method)
+                VALUES (%s,%s,%s,'debit',%s,%s,%s,NULL)
             """, (tid, sid, purchase_id, total_amount, debit_note, when))
             # If paid now, also record the payment so the supplier balance nets to zero.
             if payment_method in ("cash", "bank"):
                 cur.execute("""
-                    INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at)
-                    VALUES (%s,%s,%s,'credit',%s,%s,%s)
-                """, (tid, sid, purchase_id, total_amount, f"Paid by {payment_method}", when))
+                    INSERT INTO supplier_ledger (tenant_id, supplier_id, purchase_id, type, amount, note, created_at, payment_method)
+                    VALUES (%s,%s,%s,'credit',%s,%s,%s,%s)
+                """, (tid, sid, purchase_id, total_amount, f"Paid by {payment_method}", when, payment_method))
 
     return purchase_id
 
