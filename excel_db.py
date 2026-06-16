@@ -2466,9 +2466,10 @@ def sync_journal_from_operations():
         net = round(float(inv.get("subtotal") or 0) - float(inv.get("discount_total") or 0), 2)
         tax = round(float(inv.get("tax_amount") or 0), 2)
         total = round(float(inv.get("total") or 0), 2)
-        # Recorded as cash received (a realized credit sale has now been paid).
+        pm = str(inv.get("payment_method") or "cash").strip().lower()
+        recv_acct = BANK if pm == "bank" else CASH
         lines = [
-            {"account_id": CASH, "debit": total},
+            {"account_id": recv_acct, "debit": total},
             {"account_id": SALES, "credit": net},
         ]
         if tax > 0:
