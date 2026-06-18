@@ -698,7 +698,7 @@ def _customer_exists_in_workbook(wb, customer_id):
 
 # ── Invoices ──────────────────────────────────────────────────────────
 
-def get_all_invoices(include_deleted=False):
+def get_all_invoices(include_deleted=False, start_date=None, end_date=None):
     with _lock:
         wb = _open()
         ws = wb["Invoices"]
@@ -709,6 +709,14 @@ def get_all_invoices(include_deleted=False):
             inv = _row_to_dict(INVOICE_HEADERS, row)
             if not include_deleted and inv.get("status") == "deleted":
                 continue
+            if start_date or end_date:
+                dt = inv.get("created_at")
+                inv_date = dt.date() if hasattr(dt, "date") else dt
+                if inv_date:
+                    if start_date and inv_date < start_date:
+                        continue
+                    if end_date and inv_date > end_date:
+                        continue
             invoices.append(inv)
         wb.close()
     invoices.sort(key=lambda x: x["invoice_id"], reverse=True)

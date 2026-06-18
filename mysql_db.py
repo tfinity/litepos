@@ -650,16 +650,20 @@ def get_customer_product_aggregates(customer_id):
 
 # ── Invoices ──────────────────────────────────────────────────────────
 
-def get_all_invoices(include_deleted=False):
+def get_all_invoices(include_deleted=False, start_date=None, end_date=None):
     with _conn() as conn:
         with conn.cursor() as cur:
-            if include_deleted:
-                cur.execute("SELECT * FROM invoices WHERE tenant_id = %s ORDER BY invoice_id DESC",
-                            (_tid(),))
-            else:
-                cur.execute("SELECT * FROM invoices WHERE tenant_id = %s AND "
-                            "(status != 'deleted' OR status IS NULL) ORDER BY invoice_id DESC",
-                            (_tid(),))
+            where = "tenant_id = %s"
+            params = [_tid()]
+            if not include_deleted:
+                where += " AND (status != 'deleted' OR status IS NULL)"
+            if start_date:
+                where += " AND DATE(created_at) >= %s"
+                params.append(start_date)
+            if end_date:
+                where += " AND DATE(created_at) <= %s"
+                params.append(end_date)
+            cur.execute(f"SELECT * FROM invoices WHERE {where} ORDER BY invoice_id DESC", params)
             return cur.fetchall()
 
 

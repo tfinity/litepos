@@ -13,6 +13,30 @@
     </div>
 </div>
 
+<!-- Date filter -->
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label mb-1 small">From</label>
+                <input type="date" name="start" class="form-control" value="{{ start_date.isoformat() }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label mb-1 small">To</label>
+                <input type="date" name="end" class="form-control" value="{{ end_date.isoformat() }}">
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-dark w-100"><i class="bi bi-funnel"></i> Filter</button>
+            </div>
+            <div class="col-md-4 text-end text-muted small align-self-end pb-1">
+                {{ invoices|length }} invoice{{ 's' if invoices|length != 1 else '' }}
+                &mdash; Total:
+                <strong>{{ currency }} {{ "{:,.2f}".format(invoices | sum(attribute='total')) }}</strong>
+            </div>
+        </form>
+    </div>
+</div>
+
 {% if invoices %}
 <div class="table-responsive">
     <table class="table table-hover">
@@ -66,6 +90,6 @@
     </table>
 </div>
 {% else %}
-<div class="alert alert-info">No invoices yet. <a href="{{ url_for('invoice_create') }}">Create your first sale</a>.</div>
+<div class="alert alert-info">No invoices found for this period. <a href="{{ url_for('invoice_create') }}">Create a new sale</a>.</div>
 {% endif %}
 {% endblock %}

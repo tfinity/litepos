@@ -388,6 +388,7 @@ function submitQuickSupplier() {
 function toggleDirect() {
     const on = document.getElementById('directToggle').checked;
     document.getElementById('directBox').style.display = on ? 'block' : 'none';
+    document.getElementById('submitBtn').disabled = on ? false : cart.length === 0;
 }
 
 async function submitPurchase() {

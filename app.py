@@ -494,13 +494,23 @@ def _attach_customer(invoice, cmap):
 @app.route("/invoices")
 @login_required
 def invoices():
+    today = date.today()
+    start_str = request.args.get("start", today.replace(day=1).isoformat())
+    end_str = request.args.get("end", today.isoformat())
+    try:
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = today.replace(day=1)
+        end_date = today
     cmap = excel_db.customer_lookup()
     all_invoices = []
-    for inv in excel_db.get_all_invoices():
+    for inv in excel_db.get_all_invoices(start_date=start_date, end_date=end_date):
         inv = dict(inv)
         _attach_customer(inv, cmap)
         all_invoices.append(inv)
-    return render_template("invoices.html", invoices=all_invoices)
+    return render_template("invoices.html", invoices=all_invoices,
+                           start_date=start_date, end_date=end_date)
 
 
 @app.route("/invoices/create", methods=["GET", "POST"])
