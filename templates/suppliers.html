@@ -28,10 +28,14 @@
 </div>
 
 {% if balances %}
+<div class="mb-3">
+    <input type="text" class="form-control" id="suppliersSearch"
+           placeholder="Search supplier, phone..." oninput="filterTable('suppliersSearch','suppliersTable')">
+</div>
 <div class="card">
     <div class="card-header"><strong>Supplier Balances</strong></div>
     <div class="table-responsive">
-        <table class="table table-hover mb-0">
+        <table class="table table-hover mb-0" id="suppliersTable">
             <thead class="table-dark">
                 <tr>
                     <th>Supplier</th>

@@ -54,14 +54,18 @@
 </div>
 
 <div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <strong>Account Ledger</strong>
-        <a href="{{ url_for('purchase_create') }}?supplier_id={{ supplier.supplier_id }}" class="btn btn-dark btn-sm">
-            <i class="bi bi-plus-circle"></i> New Purchase
-        </a>
+        <div class="d-flex gap-2 align-items-center flex-grow-1 justify-content-end">
+            <input type="text" class="form-control form-control-sm" id="ledgerSearch" style="max-width:220px"
+                   placeholder="Search..." oninput="filterTable('ledgerSearch','ledgerTable')">
+            <a href="{{ url_for('purchase_create') }}?supplier_id={{ supplier.supplier_id }}" class="btn btn-dark btn-sm text-nowrap">
+                <i class="bi bi-plus-circle"></i> New Purchase
+            </a>
+        </div>
     </div>
     <div class="table-responsive">
-        <table class="table table-hover mb-0">
+        <table class="table table-hover mb-0" id="ledgerTable">
             <thead class="table-dark">
                 <tr>
                     <th>Date</th>

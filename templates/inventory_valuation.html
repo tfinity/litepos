@@ -39,10 +39,14 @@
 </div>
 {% endif %}
 
+<div class="mb-3">
+    <input type="text" class="form-control" id="valuationSearch"
+           placeholder="Search product..." oninput="filterTable('valuationSearch','valuationTable')">
+</div>
 <div class="card">
     <div class="card-header"><strong>Stock on hand, valued at cost</strong></div>
     <div class="table-responsive">
-        <table class="table table-hover mb-0">
+        <table class="table table-hover mb-0" id="valuationTable">
             <thead class="table-dark">
                 <tr>
                     <th>Product</th>

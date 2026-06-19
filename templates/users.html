@@ -8,9 +8,13 @@
     </button>
 </div>
 
+<div class="mb-3">
+    <input type="text" class="form-control" id="usersSearch"
+           placeholder="Search username, role..." oninput="filterTable('usersSearch','usersTable')">
+</div>
 <div class="card">
     <div class="table-responsive">
-        <table class="table table-hover mb-0">
+        <table class="table table-hover mb-0" id="usersTable">
             <thead class="table-dark">
                 <tr>
                     <th>Username</th>

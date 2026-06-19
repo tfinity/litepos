@@ -83,14 +83,18 @@
 </div>
 
 <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <strong>Products purchased (all invoices)</strong>
-        <span class="small text-muted">Line totals: {{ currency }} {{ "{:,.2f}".format(total_lines_amount) }}</span>
+        <div class="d-flex gap-2 align-items-center">
+            <input type="text" class="form-control form-control-sm" id="custProductsSearch" style="max-width:180px"
+                   placeholder="Search..." oninput="filterTable('custProductsSearch','custProductsTable')">
+            <span class="small text-muted text-nowrap">Line totals: {{ currency }} {{ "{:,.2f}".format(total_lines_amount) }}</span>
+        </div>
     </div>
     <div class="card-body p-0">
         {% if aggregates %}
         <div class="table-responsive">
-            <table class="table table-sm mb-0">
+            <table class="table table-sm mb-0" id="custProductsTable">
                 <thead class="table-light">
                     <tr>
                         <th>Product</th>
@@ -116,11 +120,15 @@
 </div>
 
 <div class="card mb-4">
-    <div class="card-header"><strong>Invoices</strong></div>
+    <div class="card-header d-flex justify-content-between align-items-center gap-2">
+        <strong>Invoices</strong>
+        <input type="text" class="form-control form-control-sm" id="custInvoicesSearch" style="max-width:180px"
+               placeholder="Search..." oninput="filterTable('custInvoicesSearch','custInvoicesTable')">
+    </div>
     <div class="card-body p-0">
         {% if invoices %}
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0" id="custInvoicesTable">
                 <thead class="table-light">
                     <tr>
                         <th>Invoice</th>

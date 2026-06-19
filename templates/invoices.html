@@ -13,7 +13,7 @@
     </div>
 </div>
 
-<!-- Date filter -->
+<!-- Date filter + search -->
 <div class="card mb-3">
     <div class="card-body py-2">
         <form method="GET" class="row g-2 align-items-end">
@@ -26,20 +26,25 @@
                 <input type="date" name="end" class="form-control" value="{{ end_date.isoformat() }}">
             </div>
             <div class="col-md-2">
+                <label class="form-label mb-1 small">&nbsp;</label>
                 <button type="submit" class="btn btn-dark w-100"><i class="bi bi-funnel"></i> Filter</button>
             </div>
-            <div class="col-md-4 text-end text-muted small align-self-end pb-1">
-                {{ invoices|length }} invoice{{ 's' if invoices|length != 1 else '' }}
-                &mdash; Total:
-                <strong>{{ currency }} {{ "{:,.2f}".format(invoices | sum(attribute='total')) }}</strong>
+            <div class="col-md-4">
+                <label class="form-label mb-1 small">Search</label>
+                <input type="text" class="form-control" id="invoicesSearch"
+                       placeholder="Customer, invoice #, payment..." oninput="filterTable('invoicesSearch','invoicesTable')">
             </div>
         </form>
+        <div class="text-end text-muted small mt-1">
+            {{ invoices|length }} invoice{{ 's' if invoices|length != 1 else '' }}
+            &mdash; Total: <strong>{{ currency }} {{ "{:,.2f}".format(invoices | sum(attribute='total')) }}</strong>
+        </div>
     </div>
 </div>
 
 {% if invoices %}
 <div class="table-responsive">
-    <table class="table table-hover">
+    <table class="table table-hover" id="invoicesTable">
         <thead class="table-dark">
             <tr>
                 <th>Invoice #</th>

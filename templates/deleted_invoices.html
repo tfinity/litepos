@@ -9,8 +9,12 @@
 </div>
 
 {% if invoices %}
+<div class="mb-3">
+    <input type="text" class="form-control" id="deletedSearch"
+           placeholder="Search invoice, customer, reason..." oninput="filterTable('deletedSearch','deletedTable')">
+</div>
 <div class="table-responsive">
-    <table class="table table-hover">
+    <table class="table table-hover" id="deletedTable">
         <thead class="table-dark">
             <tr>
                 <th>Invoice #</th>

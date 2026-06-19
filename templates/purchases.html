@@ -9,9 +9,13 @@
 </div>
 
 {% if purchases %}
+<div class="mb-3">
+    <input type="text" class="form-control" id="purchasesSearch"
+           placeholder="Search supplier, note..." oninput="filterTable('purchasesSearch','purchasesTable')">
+</div>
 <div class="card">
     <div class="table-responsive">
-        <table class="table table-hover mb-0">
+        <table class="table table-hover mb-0" id="purchasesTable">
             <thead class="table-dark">
                 <tr>
                     <th>#</th>
