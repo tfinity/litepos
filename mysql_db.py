@@ -1499,6 +1499,77 @@ def get_supplier_balance(supplier_id):
     return round(total_debt, 2), round(total_paid, 2), round(total_debt - total_paid, 2)
 
 
+def delete_purchase_invoice(purchase_id):
+    pid = int(purchase_id)
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT product_id, quantity FROM purchase_invoice_items WHERE purchase_id=%s AND tenant_id=%s", (pid, tid))
+            items = cur.fetchall()
+            for item in items:
+                cur.execute(
+                    "UPDATE products SET quantity = GREATEST(0, quantity - %s) WHERE product_id=%s AND tenant_id=%s",
+                    (int(item["quantity"]), item["product_id"], tid)
+                )
+            cur.execute("DELETE FROM journal_entries WHERE source_type='purchase' AND source_id=%s AND tenant_id=%s", (pid, tid))
+            cur.execute("DELETE FROM supplier_ledger WHERE purchase_id=%s AND tenant_id=%s", (pid, tid))
+            cur.execute("DELETE FROM purchase_invoice_items WHERE purchase_id=%s AND tenant_id=%s", (pid, tid))
+            cur.execute("DELETE FROM purchase_invoices WHERE purchase_id=%s AND tenant_id=%s", (pid, tid))
+        conn.commit()
+
+
+def delete_supplier_payment(entry_id):
+    eid = int(entry_id)
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM supplier_ledger WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Entry not found.")
+            if row["type"] != "credit" or row.get("purchase_id"):
+                raise ValueError("Only standalone payment entries can be deleted.")
+            cur.execute("DELETE FROM journal_entries WHERE source_type='supplier_payment' AND source_id=%s AND tenant_id=%s", (eid, tid))
+            cur.execute("DELETE FROM supplier_ledger WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+        conn.commit()
+
+
+def update_supplier_payment(entry_id, amount, note="", payment_method="cash"):
+    eid = int(entry_id)
+    tid = _tid()
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    pm = (payment_method or "cash").strip().lower()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM supplier_ledger WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Entry not found.")
+            if row["type"] != "credit" or row.get("purchase_id"):
+                raise ValueError("Only standalone payment entries can be edited.")
+            cur.execute(
+                "UPDATE supplier_ledger SET amount=%s, note=%s, payment_method=%s WHERE entry_id=%s AND tenant_id=%s",
+                (amount, (note or "").strip(), pm, eid, tid)
+            )
+            cur.execute("DELETE FROM journal_entries WHERE source_type='supplier_payment' AND source_id=%s AND tenant_id=%s", (eid, tid))
+            cur.execute("SELECT account_id, code FROM accounts WHERE tenant_id=%s AND code IN ('1000','1010','2000')", (tid,))
+            acc = {r["code"]: r["account_id"] for r in cur.fetchall()}
+            AP, CASH, BANK = acc["2000"], acc["1000"], acc["1010"]
+            cash_acct = BANK if pm == "bank" else CASH
+            cur.execute(
+                "INSERT INTO journal_entries (tenant_id, date, description, source_type, source_id, created_by) VALUES (%s,%s,'Supplier payment','supplier_payment',%s,'system')",
+                (tid, row["created_at"], eid)
+            )
+            je_id = cur.lastrowid
+            cur.executemany(
+                "INSERT INTO journal_lines (tenant_id, entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s,%s)",
+                [(tid, je_id, AP, amount, 0.0), (tid, je_id, cash_acct, 0.0, amount)]
+            )
+        conn.commit()
+
+
 def get_all_supplier_balances():
     smap = supplier_lookup()
     with _conn() as conn:

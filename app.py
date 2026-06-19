@@ -1159,6 +1159,47 @@ def purchase_detail(purchase_id):
     return render_template("purchase_detail.html", purchase=purchase, supplier=supplier, items=items)
 
 
+@app.route("/purchases/<int:purchase_id>/delete", methods=["POST"])
+@login_required
+def purchase_delete(purchase_id):
+    try:
+        excel_db.delete_purchase_invoice(purchase_id)
+        flash("Purchase invoice deleted and stock reversed.", "success")
+    except Exception as e:
+        flash(f"Could not delete: {e}", "danger")
+    return redirect(url_for("purchases_list"))
+
+
+@app.route("/suppliers/<int:supplier_id>/ledger/<int:entry_id>/delete", methods=["POST"])
+@login_required
+def supplier_ledger_entry_delete(supplier_id, entry_id):
+    try:
+        excel_db.delete_supplier_payment(entry_id)
+        flash("Payment entry deleted.", "success")
+    except Exception as e:
+        flash(f"Could not delete: {e}", "danger")
+    return redirect(url_for("supplier_detail", supplier_id=supplier_id))
+
+
+@app.route("/suppliers/<int:supplier_id>/ledger/<int:entry_id>/edit", methods=["POST"])
+@login_required
+def supplier_ledger_entry_edit(supplier_id, entry_id):
+    amount_str = request.form.get("amount", "").strip()
+    note = request.form.get("note", "").strip()
+    payment_method = request.form.get("payment_method", "cash").strip().lower()
+    try:
+        amount = float(amount_str)
+    except (ValueError, TypeError):
+        flash("Invalid amount.", "danger")
+        return redirect(url_for("supplier_detail", supplier_id=supplier_id))
+    try:
+        excel_db.update_supplier_payment(entry_id, amount, note, payment_method)
+        flash("Payment entry updated.", "success")
+    except Exception as e:
+        flash(f"Could not update: {e}", "danger")
+    return redirect(url_for("supplier_detail", supplier_id=supplier_id))
+
+
 # ── P&L Report ────────────────────────────────────────────────────────
 
 @app.route("/pl-report")

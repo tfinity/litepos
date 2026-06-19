@@ -72,6 +72,7 @@
                     <th class="text-end">Debit ({{ currency }})</th>
                     <th class="text-end">Credit ({{ currency }})</th>
                     <th class="text-end">Balance ({{ currency }})</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>
@@ -109,10 +110,31 @@
                     <td class="text-end fw-bold {{ 'text-danger' if e.running_balance > 0 else 'text-success' }}">
                         {{ "{:,.2f}".format(e.running_balance) }}
                     </td>
+                    <td class="text-nowrap">
+                        {% if e.type == 'credit' and not e.purchase_id %}
+                        <button class="btn btn-xs btn-outline-secondary py-0 px-1 edit-payment-btn"
+                                data-entry-id="{{ e.entry_id }}"
+                                data-amount="{{ e.amount }}"
+                                data-note="{{ e.note or '' }}"
+                                data-method="{{ e.payment_method or 'cash' }}">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-xs btn-outline-danger py-0 px-1 delete-payment-btn"
+                                data-entry-id="{{ e.entry_id }}"
+                                data-amount="{{ '{:,.2f}'.format(e.amount) }}">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                        {% elif e.type == 'debit' and e.purchase_id %}
+                        <a href="{{ url_for('purchase_detail', purchase_id=e.purchase_id) }}"
+                           class="btn btn-xs btn-outline-secondary py-0 px-1" title="View invoice">
+                            <i class="bi bi-eye"></i>
+                        </a>
+                        {% endif %}
+                    </td>
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="8" class="text-center text-muted py-4">No ledger entries yet.</td>
+                    <td colspan="9" class="text-center text-muted py-4">No ledger entries yet.</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -156,6 +178,63 @@
         </div>
     </div>
 </div>
+<!-- Edit payment modal -->
+<div class="modal fade" id="editPaymentModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" id="editPaymentForm" action="">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Payment Entry</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Amount ({{ currency }})</label>
+                        <input type="number" name="amount" id="editAmount" class="form-control" min="0.01" step="0.01" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Paid from</label>
+                        <select name="payment_method" id="editMethod" class="form-select">
+                            <option value="cash">Cash</option>
+                            <option value="bank">Bank</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Note</label>
+                        <input type="text" name="note" id="editNote" class="form-control">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-check-circle"></i> Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Delete payment confirm modal -->
+<div class="modal fade" id="deletePaymentModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle"></i> Delete Payment Entry</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Delete payment of <strong id="deletePaymentAmount"></strong>?</p>
+                <p class="text-muted small mb-0">The supplier balance will be updated accordingly. This cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form method="POST" id="deletePaymentForm" action="">
+                    <button type="submit" class="btn btn-danger"><i class="bi bi-trash"></i> Delete</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 document.getElementById('payModal').addEventListener('show.bs.modal', function(e) {
     const btn = e.relatedTarget;
@@ -165,6 +244,26 @@ document.getElementById('payModal').addEventListener('show.bs.modal', function(e
     document.getElementById('payBalance').textContent = '{{ currency }} ' + balance.toFixed(2);
     document.getElementById('payAmount').value = balance.toFixed(2);
     document.getElementById('payForm').action = '/suppliers/' + cid + '/pay';
+});
+
+document.querySelectorAll('.edit-payment-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const eid = this.getAttribute('data-entry-id');
+        document.getElementById('editAmount').value = parseFloat(this.getAttribute('data-amount')).toFixed(2);
+        document.getElementById('editNote').value = this.getAttribute('data-note');
+        document.getElementById('editMethod').value = this.getAttribute('data-method');
+        document.getElementById('editPaymentForm').action = '/suppliers/{{ supplier.supplier_id }}/ledger/' + eid + '/edit';
+        new bootstrap.Modal(document.getElementById('editPaymentModal')).show();
+    });
+});
+
+document.querySelectorAll('.delete-payment-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const eid = this.getAttribute('data-entry-id');
+        document.getElementById('deletePaymentAmount').textContent = '{{ currency }} ' + this.getAttribute('data-amount');
+        document.getElementById('deletePaymentForm').action = '/suppliers/{{ supplier.supplier_id }}/ledger/' + eid + '/delete';
+        new bootstrap.Modal(document.getElementById('deletePaymentModal')).show();
+    });
 });
 </script>
 {% endblock %}

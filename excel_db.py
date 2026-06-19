@@ -1857,6 +1857,196 @@ def get_supplier_balance(supplier_id):
     return round(total_debt, 2), round(total_paid, 2), round(total_debt - total_paid, 2)
 
 
+def delete_purchase_invoice(purchase_id):
+    pid = int(purchase_id)
+    with _lock:
+        wb = _open()
+        ws_purch = wb["Purchases"]
+        ws_items = wb["PurchaseItems"]
+        ws_sl = wb["SupplierLedger"] if "SupplierLedger" in wb.sheetnames else None
+        ws_prod = wb["Products"]
+
+        # Build product row lookup (col 5 = quantity)
+        product_rows = {}
+        for row in ws_prod.iter_rows(min_row=2):
+            if row[0].value is not None:
+                product_rows[int(row[0].value)] = row
+
+        # Reverse stock quantities and collect item rows to delete
+        item_rows_to_delete = []
+        for idx, row in enumerate(ws_items.iter_rows(min_row=2), start=2):
+            if row[0].value is None:
+                continue
+            if int(row[1].value) == pid:
+                prod_id = int(row[2].value)
+                qty = int(row[4].value or 0)
+                if prod_id in product_rows:
+                    prow = product_rows[prod_id]
+                    prow[5].value = max(0, int(prow[5].value or 0) - qty)
+                item_rows_to_delete.append(idx)
+        for idx in sorted(item_rows_to_delete, reverse=True):
+            ws_items.delete_rows(idx, 1)
+
+        # Delete supplier ledger entries for this purchase
+        if ws_sl:
+            sl_rows_to_delete = []
+            for idx, row in enumerate(ws_sl.iter_rows(min_row=2), start=2):
+                if row[0].value is None:
+                    continue
+                if row[2].value is not None and int(row[2].value) == pid:
+                    sl_rows_to_delete.append(idx)
+            for idx in sorted(sl_rows_to_delete, reverse=True):
+                ws_sl.delete_rows(idx, 1)
+
+        # Delete journal entries and cascading lines
+        if "JournalEntries" in wb.sheetnames:
+            ws_je = wb["JournalEntries"]
+            del_eids = set()
+            del_je_rows = []
+            for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+                if row[0].value is None:
+                    continue
+                if row[3].value == "purchase" and row[4].value is not None and int(row[4].value) == pid:
+                    del_eids.add(int(row[0].value))
+                    del_je_rows.append(idx)
+            for idx in sorted(del_je_rows, reverse=True):
+                ws_je.delete_rows(idx, 1)
+            if del_eids and "JournalLines" in wb.sheetnames:
+                ws_jl = wb["JournalLines"]
+                del_jl_rows = [i for i, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                               if row[0].value is not None and int(row[1].value) in del_eids]
+                for idx in sorted(del_jl_rows, reverse=True):
+                    ws_jl.delete_rows(idx, 1)
+
+        # Delete the purchase invoice row
+        purch_row = None
+        for idx, row in enumerate(ws_purch.iter_rows(min_row=2), start=2):
+            if row[0].value is not None and int(row[0].value) == pid:
+                purch_row = idx
+                break
+        if purch_row:
+            ws_purch.delete_rows(purch_row, 1)
+
+        _save(wb)
+        wb.close()
+
+
+def delete_supplier_payment(entry_id):
+    eid = int(entry_id)
+    with _lock:
+        wb = _open()
+        if "SupplierLedger" not in wb.sheetnames:
+            wb.close()
+            raise ValueError("Entry not found.")
+        ws_sl = wb["SupplierLedger"]
+
+        row_to_delete = None
+        for idx, row in enumerate(ws_sl.iter_rows(min_row=2), start=2):
+            if row[0].value is None:
+                continue
+            if int(row[0].value) == eid:
+                if row[3].value != "credit" or row[2].value is not None:
+                    wb.close()
+                    raise ValueError("Only standalone payment entries can be deleted.")
+                row_to_delete = idx
+                break
+
+        if row_to_delete is None:
+            wb.close()
+            raise ValueError("Entry not found.")
+
+        if "JournalEntries" in wb.sheetnames:
+            ws_je = wb["JournalEntries"]
+            del_eids = set()
+            del_je_rows = []
+            for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+                if row[0].value is None:
+                    continue
+                if row[3].value == "supplier_payment" and row[4].value is not None and int(row[4].value) == eid:
+                    del_eids.add(int(row[0].value))
+                    del_je_rows.append(idx)
+            for idx in sorted(del_je_rows, reverse=True):
+                ws_je.delete_rows(idx, 1)
+            if del_eids and "JournalLines" in wb.sheetnames:
+                ws_jl = wb["JournalLines"]
+                del_jl_rows = [i for i, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                               if row[0].value is not None and int(row[1].value) in del_eids]
+                for idx in sorted(del_jl_rows, reverse=True):
+                    ws_jl.delete_rows(idx, 1)
+
+        ws_sl.delete_rows(row_to_delete, 1)
+        _save(wb)
+        wb.close()
+
+
+def update_supplier_payment(entry_id, amount, note="", payment_method="cash"):
+    eid = int(entry_id)
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    pm = (payment_method or "cash").strip().lower()
+
+    with _lock:
+        wb = _open()
+        if "SupplierLedger" not in wb.sheetnames:
+            wb.close()
+            raise ValueError("Entry not found.")
+        ws_sl = wb["SupplierLedger"]
+
+        entry_created_at = None
+        for row in ws_sl.iter_rows(min_row=2):
+            if row[0].value is None:
+                continue
+            if int(row[0].value) == eid:
+                if row[3].value != "credit" or row[2].value is not None:
+                    wb.close()
+                    raise ValueError("Only standalone payment entries can be edited.")
+                row[4].value = amount
+                row[5].value = (note or "").strip()
+                row[7].value = pm
+                entry_created_at = row[6].value
+                break
+        else:
+            wb.close()
+            raise ValueError("Entry not found.")
+
+        # Delete old journal entry for this payment
+        if "JournalEntries" in wb.sheetnames:
+            ws_je = wb["JournalEntries"]
+            del_eids = set()
+            del_je_rows = []
+            for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+                if row[0].value is None:
+                    continue
+                if row[3].value == "supplier_payment" and row[4].value is not None and int(row[4].value) == eid:
+                    del_eids.add(int(row[0].value))
+                    del_je_rows.append(idx)
+            for idx in sorted(del_je_rows, reverse=True):
+                ws_je.delete_rows(idx, 1)
+            if del_eids and "JournalLines" in wb.sheetnames:
+                ws_jl = wb["JournalLines"]
+                del_jl_rows = [i for i, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                               if row[0].value is not None and int(row[1].value) in del_eids]
+                for idx in sorted(del_jl_rows, reverse=True):
+                    ws_jl.delete_rows(idx, 1)
+
+        _save(wb)
+        wb.close()
+
+    # Re-post journal with updated values
+    ap = get_account_by_code("2000")
+    cash_acc = get_account_by_code("1010" if pm == "bank" else "1000")
+    if ap and cash_acc:
+        post_journal(
+            "Supplier payment",
+            [{"account_id": ap["account_id"], "debit": amount, "credit": 0},
+             {"account_id": cash_acc["account_id"], "debit": 0, "credit": amount}],
+            source_type="supplier_payment",
+            source_id=eid,
+            entry_date=entry_created_at,
+        )
+
+
 def get_all_supplier_balances():
     smap = supplier_lookup()
     entries = get_supplier_ledger_entries()
