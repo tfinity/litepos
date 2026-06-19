@@ -513,6 +513,36 @@ def invoices():
                            start_date=start_date, end_date=end_date)
 
 
+@app.route("/invoices/product-search")
+@login_required
+def invoice_product_search():
+    today = date.today()
+    start_str = request.args.get("start", today.replace(day=1).isoformat())
+    end_str = request.args.get("end", today.isoformat())
+    product_query = request.args.get("product", "").strip()
+    try:
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = today.replace(day=1)
+        end_date = today
+    rows = []
+    totals = {"qty": 0, "revenue": 0.0, "invoice_ids": set()}
+    if product_query:
+        rows = excel_db.search_product_sales(product_query, start_date, end_date)
+        for r in rows:
+            totals["qty"] += int(r.get("quantity") or 0)
+            totals["revenue"] += float(r.get("line_total") or 0)
+            totals["invoice_ids"].add(r["invoice_id"])
+    totals["revenue"] = round(totals["revenue"], 2)
+    totals["invoice_count"] = len(totals["invoice_ids"])
+    products = excel_db.get_all_products()
+    return render_template("invoice_product_search.html",
+                           rows=rows, totals=totals,
+                           start_date=start_date, end_date=end_date,
+                           product_query=product_query, products=products)
+
+
 @app.route("/invoices/create", methods=["GET", "POST"])
 @login_required
 def invoice_create():

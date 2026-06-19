@@ -1655,6 +1655,30 @@ def get_sales_pl_report(start_date, end_date):
     return rows, _split_pl_totals(rows)
 
 
+def search_product_sales(product_query, start_date, end_date):
+    """Return invoice lines whose product_name contains product_query within the date range."""
+    q = f"%{(product_query or '').strip()}%"
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DATE(i.created_at) AS date,
+                       i.invoice_id, i.payment_method,
+                       c.name AS customer_name,
+                       ii.product_name, ii.quantity,
+                       ROUND(ii.line_total / ii.quantity, 2) AS sale_price,
+                       ii.line_total
+                FROM invoice_items ii
+                JOIN invoices i ON i.invoice_id = ii.invoice_id AND i.tenant_id = ii.tenant_id
+                LEFT JOIN customers c ON c.customer_id = i.customer_id AND c.tenant_id = i.tenant_id
+                WHERE i.tenant_id = %s
+                  AND (i.status IS NULL OR i.status != 'deleted')
+                  AND DATE(i.created_at) BETWEEN %s AND %s
+                  AND ii.product_name LIKE %s
+                ORDER BY i.created_at DESC, i.invoice_id
+            """, (_tid(), start_date, end_date, q))
+            return cur.fetchall()
+
+
 def get_supplier_sales_pl(supplier_id, start_date, end_date):
     sid = int(supplier_id)
     with _conn() as conn:

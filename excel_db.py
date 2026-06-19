@@ -2140,6 +2140,69 @@ def get_sales_pl_report(start_date, end_date):
     return rows, _split_pl_totals(rows)
 
 
+def search_product_sales(product_query, start_date, end_date):
+    """Return all invoice lines whose product_name contains product_query (case-insensitive)
+    within the given date range. Includes customer name and invoice metadata."""
+    q = (product_query or "").strip().lower()
+    start = start_date if isinstance(start_date, date) else date.fromisoformat(str(start_date))
+    end = end_date if isinstance(end_date, date) else date.fromisoformat(str(end_date))
+
+    # Build invoice lookup with date + payment_method + customer_id
+    inv_meta = {}
+    for inv in get_all_invoices():
+        created = inv.get("created_at")
+        if isinstance(created, datetime):
+            inv_date = created.date()
+        elif isinstance(created, date):
+            inv_date = created
+        else:
+            continue
+        if start <= inv_date <= end:
+            inv_meta[int(inv["invoice_id"])] = {
+                "date": inv_date,
+                "payment_method": inv.get("payment_method"),
+                "customer_id": inv.get("customer_id"),
+            }
+
+    if not inv_meta:
+        return []
+
+    cmap = customer_lookup()
+
+    with _lock:
+        wb = _open()
+        ws = wb["InvoiceItems"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(ITEM_HEADERS, row)
+            iid = int(item["invoice_id"])
+            if iid not in inv_meta:
+                continue
+            pname = (item.get("product_name") or "").lower()
+            if q and q not in pname:
+                continue
+            meta = inv_meta[iid]
+            qty = int(item.get("quantity") or 0)
+            line_total = float(item.get("line_total") or 0)
+            cust = cmap.get(int(meta["customer_id"])) if meta.get("customer_id") else None
+            rows.append({
+                "date": meta["date"],
+                "invoice_id": iid,
+                "payment_method": meta["payment_method"],
+                "customer_name": cust["name"] if cust else None,
+                "product_name": item.get("product_name"),
+                "quantity": qty,
+                "sale_price": round(line_total / qty, 2) if qty else 0,
+                "line_total": line_total,
+            })
+        wb.close()
+
+    rows.sort(key=lambda x: (x["date"], x["invoice_id"]), reverse=True)
+    return rows
+
+
 def _empty_pl_totals():
     zero = {"revenue": 0, "cogs": 0, "profit": 0}
     return {"revenue": 0, "cogs": 0, "profit": 0,

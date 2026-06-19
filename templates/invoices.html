@@ -4,6 +4,9 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2>Invoices</h2>
     <div class="d-flex gap-2">
+        <a href="{{ url_for('invoice_product_search') }}" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-search"></i> Search by Product
+        </a>
         <a href="{{ url_for('deleted_invoices') }}" class="btn btn-outline-danger btn-sm">
             <i class="bi bi-trash"></i> Deleted Receipts
         </a>

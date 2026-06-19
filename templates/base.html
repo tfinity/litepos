@@ -115,6 +115,9 @@
                     <a class="nav-link {{ 'active' if request.endpoint == 'invoices' }}" href="{{ url_for('invoices') }}">
                         <i class="bi bi-receipt"></i> Invoices
                     </a>
+                    <a class="nav-link {{ 'active' if request.endpoint == 'invoice_product_search' }}" href="{{ url_for('invoice_product_search') }}">
+                        <i class="bi bi-search"></i> Search by Product
+                    </a>
                     <a class="nav-link {{ 'active' if request.endpoint == 'customers_sales_summary' }}" href="{{ url_for('customers_sales_summary') }}">
                         <i class="bi bi-graph-up"></i> Sales by Customer
                     </a>

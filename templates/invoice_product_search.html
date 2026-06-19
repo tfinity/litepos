@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Product Sales Search{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-search"></i> Product Sales Search</h2>
+    <a href="{{ url_for('invoices') }}" class="btn btn-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> Invoices
+    </a>
+</div>
+
+<!-- Filter form -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label">Product</label>
+                <input type="text" name="product" class="form-control"
+                       list="productList" placeholder="Type product name..."
+                       value="{{ product_query }}" autocomplete="off">
+                <datalist id="productList">
+                    {% for p in products %}
+                    <option value="{{ p.name }}">
+                    {% endfor %}
+                </datalist>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">From</label>
+                <input type="date" name="start" class="form-control" value="{{ start_date.isoformat() }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">To</label>
+                <input type="date" name="end" class="form-control" value="{{ end_date.isoformat() }}">
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-dark w-100"><i class="bi bi-search"></i> Search</button>
+            </div>
+            {% if product_query %}
+            <div class="col-md-2">
+                <a href="{{ url_for('invoice_product_search') }}?start={{ start_date.isoformat() }}&end={{ end_date.isoformat() }}"
+                   class="btn btn-outline-secondary w-100">Clear</a>
+            </div>
+            {% endif %}
+        </form>
+    </div>
+</div>
+
+{% if product_query %}
+
+<!-- Summary cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card border-dark">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Total Units Sold</h6>
+                <p class="fs-3 fw-bold mb-0">{{ totals.qty }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card border-success">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Total Revenue ({{ currency }})</h6>
+                <p class="fs-3 fw-bold text-success mb-0">{{ "{:,.2f}".format(totals.revenue) }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Invoices Containing</h6>
+                <p class="fs-3 fw-bold mb-0">{{ totals.invoice_count }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if rows %}
+<!-- Search within results -->
+<div class="mb-3">
+    <input type="text" class="form-control" id="resultSearch"
+           placeholder="Filter results by customer, invoice, date..."
+           oninput="filterTable('resultSearch','resultTable')">
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <strong>Results for "{{ product_query }}"</strong>
+        <span class="text-muted small ms-2">{{ start_date.strftime('%d %b %Y') }} — {{ end_date.strftime('%d %b %Y') }}</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0" id="resultTable">
+            <thead class="table-dark">
+                <tr>
+                    <th>Date</th>
+                    <th>Invoice</th>
+                    <th>Customer</th>
+                    <th>Product</th>
+                    <th class="text-end">Qty</th>
+                    <th class="text-end">Unit Price ({{ currency }})</th>
+                    <th class="text-end">Total ({{ currency }})</th>
+                    <th>Payment</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rows %}
+                <tr>
+                    <td>{{ r.date }}</td>
+                    <td>
+                        <a href="{{ url_for('invoice_detail', invoice_id=r.invoice_id) }}">
+                            INV-{{ "%04d"|format(r.invoice_id) }}
+                        </a>
+                    </td>
+                    <td>{{ r.customer_name or '<span class="text-muted">Walk-in</span>' | safe }}</td>
+                    <td>{{ r.product_name }}</td>
+                    <td class="text-end fw-bold">{{ r.quantity }}</td>
+                    <td class="text-end">{{ "{:,.2f}".format(r.sale_price) }}</td>
+                    <td class="text-end fw-bold">{{ "{:,.2f}".format(r.line_total) }}</td>
+                    <td>
+                        {% if r.payment_method == 'Credit' %}
+                        <span class="badge bg-danger">UNPAID</span>
+                        {% else %}
+                        <span class="badge bg-secondary">{{ r.payment_method or '—' }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+            <tfoot class="table-light fw-bold">
+                <tr>
+                    <td colspan="4" class="text-end">Total</td>
+                    <td class="text-end">{{ totals.qty }}</td>
+                    <td></td>
+                    <td class="text-end">{{ "{:,.2f}".format(totals.revenue) }}</td>
+                    <td></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+</div>
+
+{% else %}
+<div class="alert alert-info">
+    No sales found for <strong>{{ product_query }}</strong> between
+    {{ start_date.strftime('%d %b %Y') }} and {{ end_date.strftime('%d %b %Y') }}.
+</div>
+{% endif %}
+
+{% else %}
+<div class="text-muted text-center py-5">
+    <i class="bi bi-search fs-1 d-block mb-2 opacity-25"></i>
+    Enter a product name above to search sales across invoices.
+</div>
+{% endif %}
+
+{% endblock %}
