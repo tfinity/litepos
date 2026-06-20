@@ -1952,6 +1952,21 @@ def get_expense_entries(start_date=None, end_date=None):
     return entries
 
 
+def delete_expense(entry_id):
+    eid = int(entry_id)
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT entry_id FROM journal_entries WHERE entry_id=%s AND tenant_id=%s AND source_type='expense'",
+                (eid, tid)
+            )
+            if not cur.fetchone():
+                raise ValueError("Expense entry not found.")
+            cur.execute("DELETE FROM journal_entries WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+        conn.commit()
+
+
 def update_account_name(account_id, name):
     aid = int(account_id)
     name = str(name).strip()

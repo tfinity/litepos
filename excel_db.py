@@ -2642,6 +2642,35 @@ def get_expense_entries(start_date=None, end_date=None):
     return entries
 
 
+def delete_expense(entry_id):
+    eid = int(entry_id)
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            raise ValueError("Expense entry not found.")
+        ws_je = wb["JournalEntries"]
+        row_idx = None
+        for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+            if row[0].value is None:
+                continue
+            if int(row[0].value) == eid and row[3].value == "expense":
+                row_idx = idx
+                break
+        if row_idx is None:
+            wb.close()
+            raise ValueError("Expense entry not found.")
+        if "JournalLines" in wb.sheetnames:
+            ws_jl = wb["JournalLines"]
+            del_rows = [i for i, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                        if row[0].value is not None and int(row[1].value) == eid]
+            for idx in sorted(del_rows, reverse=True):
+                ws_jl.delete_rows(idx, 1)
+        ws_je.delete_rows(row_idx, 1)
+        _save(wb)
+        wb.close()
+
+
 # ── Journal sync: post accounting entries from operational data ───────
 
 def _existing_journal_sources():

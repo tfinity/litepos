@@ -105,6 +105,7 @@
                             <th>Note</th>
                             <th>Paid from</th>
                             <th class="text-end">Amount ({{ currency }})</th>
+                            <th></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -115,9 +116,15 @@
                             <td>{{ e.description or '—' }}</td>
                             <td>{{ e.paid_from.name if e.paid_from else '—' }}</td>
                             <td class="text-end fw-bold">{{ "{:,.2f}".format(e.amount) }}</td>
+                            <td>
+                                <button class="btn btn-xs btn-outline-danger py-0 px-1"
+                                        onclick="confirmDeleteExpense({{ e.entry_id }}, '{{ e.category.name if e.category else '' }}', '{{ '{:,.2f}'.format(e.amount) }}')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="5" class="text-center text-muted py-4">No expenses in this period.</td></tr>
+                        <tr><td colspan="6" class="text-center text-muted py-4">No expenses in this period.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
@@ -125,4 +132,14 @@
         </div>
     </div>
 </div>
+
+<form method="POST" id="deleteExpenseForm" action=""></form>
+<script>
+function confirmDeleteExpense(entryId, category, amount) {
+    if (!confirm('Delete ' + (category || 'expense') + ' of {{ currency }} ' + amount + '?\n\nThis will restore the balance.')) return;
+    const form = document.getElementById('deleteExpenseForm');
+    form.action = '/accounting/expenses/' + entryId + '/delete';
+    form.submit();
+}
+</script>
 {% endblock %}

@@ -1318,6 +1318,17 @@ def expenses():
                            start_date=start_date, end_date=end_date)
 
 
+@app.route("/accounting/expenses/<int:entry_id>/delete", methods=["POST"])
+@login_required
+def expense_delete(entry_id):
+    try:
+        excel_db.delete_expense(entry_id)
+        flash("Expense deleted and balance restored.", "success")
+    except Exception as e:
+        flash(f"Could not delete: {e}", "danger")
+    return redirect(url_for("expenses"))
+
+
 def _as_date(val):
     """Coerce a stored created_at (datetime/date/str) to a date, or None."""
     from datetime import datetime as _dt
