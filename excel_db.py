@@ -94,8 +94,9 @@ CUSTOMER_HEADERS = [
 INVOICE_HEADERS = [
     "invoice_id", "created_at", "subtotal", "discount_total",
     "tax_rate", "tax_amount", "total", "payment_method",
-    "customer_id",  # last: backward compatible with older workbooks (short rows)
+    "customer_id",
     "status", "deleted_at", "deleted_by", "delete_reason",
+    "delivery_charges",  # must be last for backward compat with older workbooks (short rows → None)
 ]
 ITEM_HEADERS = [
     "item_id", "invoice_id", "product_id", "product_name",
@@ -887,12 +888,13 @@ def get_invoice_items(invoice_id):
     return items
 
 
-def create_invoice(items, tax_rate, payment_method, customer_id=None):
+def create_invoice(items, tax_rate, payment_method, customer_id=None, delivery_charges=0.0):
     """
     items: list of dicts with keys: product_id, quantity, discount_amount,
     optional unit_price (sale price per unit for this line; defaults to product counter_price).
     discount_amount is a direct amount per unit (not percentage).
     customer_id: optional profile id (must exist on Customers sheet).
+    delivery_charges: optional flat delivery fee added to the total.
     Returns the new invoice_id, or raises ValueError on stock/discount issues.
     """
     with _lock:
@@ -981,7 +983,8 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
 
         net_subtotal = round(subtotal - discount_total, 2)
         tax_amount = round(net_subtotal * tax_rate, 2)
-        total = round(net_subtotal + tax_amount, 2)
+        delivery = round(float(delivery_charges or 0), 2)
+        total = round(net_subtotal + tax_amount + delivery, 2)
 
         ws_invoices.append([
             invoice_id,
@@ -993,6 +996,11 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
             total,
             payment_method,
             cid,
+            None,     # status
+            None,     # deleted_at
+            None,     # deleted_by
+            None,     # delete_reason
+            delivery, # delivery_charges
         ])
 
         for entry in line_entries:
@@ -2755,12 +2763,13 @@ def sync_journal_from_operations():
                          for it in items), 2)
         net = round(float(inv.get("subtotal") or 0) - float(inv.get("discount_total") or 0), 2)
         tax = round(float(inv.get("tax_amount") or 0), 2)
+        delivery = round(float(inv.get("delivery_charges") or 0), 2)
         total = round(float(inv.get("total") or 0), 2)
         pm = str(inv.get("payment_method") or "cash").strip().lower()
         recv_acct = BANK if pm == "bank" else CASH
         lines = [
             {"account_id": recv_acct, "debit": total},
-            {"account_id": SALES, "credit": net},
+            {"account_id": SALES, "credit": net + delivery},
         ]
         if tax > 0:
             lines.append({"account_id": TAX, "credit": tax})

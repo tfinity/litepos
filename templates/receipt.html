@@ -110,6 +110,12 @@
                 <td class="text-right">{{ "{:,.2f}".format(invoice.tax_amount) }}</td>
             </tr>
             {% endif %}
+            {% if invoice.delivery_charges %}
+            <tr>
+                <td>Delivery:</td>
+                <td class="text-right">{{ "{:,.2f}".format(invoice.delivery_charges) }}</td>
+            </tr>
+            {% endif %}
             <tr class="grand-total">
                 <td>TOTAL:</td>
                 <td class="text-right">{{ currency }} {{ "{:,.2f}".format(invoice.total) }}</td>

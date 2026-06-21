@@ -153,6 +153,16 @@
                                 <td id="taxAmount">0.00</td>
                             </tr>
                             {% endif %}
+                            <tr>
+                                <td class="text-end pe-2">
+                                    <label class="form-label mb-0 small">Delivery charges:</label>
+                                </td>
+                                <td style="width:130px">
+                                    <input type="number" id="deliveryCharges" class="form-control form-control-sm text-end"
+                                           min="0" step="0.01" value="0" placeholder="0.00"
+                                           oninput="renderCart()">
+                                </td>
+                            </tr>
                             <tr class="fs-5">
                                 <td><strong>Total:</strong></td>
                                 <td class="fw-bold text-primary" id="totalAmount">{{ currency }} 0.00</td>
@@ -617,7 +627,8 @@ function renderCart() {
     const discountTotal = cart.reduce((sum, item) => sum + item.discount_total, 0);
     const net = subtotal - discountTotal;
     const tax = net * TAX_RATE;
-    const total = net + tax;
+    const delivery = parseFloat(document.getElementById('deliveryCharges').value) || 0;
+    const total = net + tax + delivery;
     document.getElementById('subtotal').textContent = CURRENCY + ' ' + subtotal.toFixed(2);
     document.getElementById('discountTotal').textContent = '-' + CURRENCY + ' ' + discountTotal.toFixed(2);
     const taxEl = document.getElementById('taxAmount');
@@ -646,6 +657,7 @@ function printQuotation() {
             discount_amount: item.discount_per_unit,
             unit_price: item.unit_price,
         })),
+        delivery_charges: parseFloat(document.getElementById('deliveryCharges').value) || 0,
     };
     const cidRaw = document.getElementById('customerId').value.trim();
     if (cidRaw) {
@@ -676,6 +688,7 @@ function submitInvoice() {
             unit_price: item.unit_price,
         })),
         payment_method: document.getElementById('paymentMethod').value,
+        delivery_charges: parseFloat(document.getElementById('deliveryCharges').value) || 0,
     };
     const cidRaw = document.getElementById('customerId').value.trim();
     if (cidRaw) {

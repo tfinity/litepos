@@ -556,6 +556,7 @@ def invoice_create():
             invoice_id = excel_db.create_invoice(
                 items, TAX_RATE, payment_method,
                 customer_id=data.get("customer_id"),
+                delivery_charges=float(data.get("delivery_charges") or 0),
             )
             return jsonify({"invoice_id": invoice_id})
         except ValueError as e:
@@ -1584,6 +1585,10 @@ def income_statement():
     cogs = sales_totals["cogs"]
     gross_profit = sales_totals["profit"]
 
+    # Paid vs credit split (already computed by _split_pl_totals)
+    paid = sales_totals.get("paid", {"revenue": 0, "cogs": 0, "profit": 0})
+    credit = sales_totals.get("credit", {"revenue": 0, "cogs": 0, "profit": 0})
+
     # Operating expenses from the ledger, grouped by category
     exp_entries = excel_db.get_expense_entries(start_date, end_date)
     by_cat = {}
@@ -1595,11 +1600,18 @@ def income_statement():
 
     net_profit = round(gross_profit - total_expenses, 2)
 
+    # Actual cash profit: only paid invoices, minus all expenses
+    cash_gross_profit = paid["profit"]
+    cash_net_profit = round(cash_gross_profit - total_expenses, 2)
+
     return render_template("income_statement.html",
                            start_date=start_date, end_date=end_date,
                            revenue=revenue, cogs=cogs, gross_profit=gross_profit,
+                           paid=paid, credit=credit,
                            expense_rows=expense_rows, total_expenses=total_expenses,
-                           net_profit=net_profit)
+                           net_profit=net_profit,
+                           cash_gross_profit=cash_gross_profit,
+                           cash_net_profit=cash_net_profit)
 
 
 if __name__ == "__main__":

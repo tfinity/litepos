@@ -115,6 +115,7 @@ def init_workbook():
                 "ALTER TABLE invoices ADD COLUMN deleted_at DATETIME",
                 "ALTER TABLE invoices ADD COLUMN deleted_by VARCHAR(100)",
                 "ALTER TABLE invoices ADD COLUMN delete_reason TEXT",
+                "ALTER TABLE invoices ADD COLUMN delivery_charges DECIMAL(12,2) DEFAULT 0",
             ]:
                 try:
                     cur.execute(_col)
@@ -748,7 +749,7 @@ def get_invoice_items(invoice_id):
             return cur.fetchall()
 
 
-def create_invoice(items, tax_rate, payment_method, customer_id=None):
+def create_invoice(items, tax_rate, payment_method, customer_id=None, delivery_charges=0.0):
     cid = normalize_customer_id(customer_id)
     if payment_method == "Credit" and cid is None:
         raise ValueError("Credit payment requires a customer to be selected.")
@@ -811,12 +812,13 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None):
 
             net = round(subtotal - discount_total, 2)
             tax_amount = round(net * tax_rate, 2)
-            total = round(net + tax_amount, 2)
+            delivery = round(float(delivery_charges or 0), 2)
+            total = round(net + tax_amount + delivery, 2)
 
             cur.execute("""
-                INSERT INTO invoices (tenant_id, created_at, subtotal, discount_total, tax_rate, tax_amount, total, payment_method, customer_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (tid, datetime.now(), round(subtotal, 2), round(discount_total, 2), tax_rate, tax_amount, total, payment_method, cid))
+                INSERT INTO invoices (tenant_id, created_at, subtotal, discount_total, tax_rate, tax_amount, total, payment_method, customer_id, delivery_charges)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (tid, datetime.now(), round(subtotal, 2), round(discount_total, 2), tax_rate, tax_amount, total, payment_method, cid, delivery))
             invoice_id = cur.lastrowid
 
             for pid, pname, pp, up, qty, ld, lt in line_entries:
@@ -2155,10 +2157,11 @@ def sync_journal_from_operations():
         cogs = round(sum(float(it["purchase_price"] or 0) * int(it["quantity"] or 0) for it in items), 2)
         net = round(float(inv.get("subtotal") or 0) - float(inv.get("discount_total") or 0), 2)
         tax = round(float(inv.get("tax_amount") or 0), 2)
+        delivery = round(float(inv.get("delivery_charges") or 0), 2)
         total = round(float(inv.get("total") or 0), 2)
         pm = str(inv.get("payment_method") or "cash").strip().lower()
         recv_acct = BANK if pm == "bank" else CASH
-        lines = [(recv_acct, total, 0.0), (SALES, 0.0, net)]
+        lines = [(recv_acct, total, 0.0), (SALES, 0.0, net + delivery)]
         if tax > 0:
             lines.append((TAX, 0.0, tax))
         if cogs > 0:
