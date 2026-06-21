@@ -63,17 +63,62 @@
 
                         <!-- Net -->
                         <tr class="border-top border-2">
-                            <td class="fw-bold fs-5">Net Profit</td>
+                            <td class="fw-bold fs-5">Net Profit <span class="text-muted small fw-normal">(incl. unpaid)</span></td>
                             <td class="text-end fw-bold fs-5 {{ 'text-success' if net_profit >= 0 else 'text-danger' }}">
                                 {{ currency }} {{ "{:,.2f}".format(net_profit) }}
+                            </td>
+                        </tr>
+
+                        <!-- Actual cash profit -->
+                        <tr><td colspan="2" class="pt-4"></td></tr>
+                        <tr>
+                            <td colspan="2" class="fw-bold border-top pt-2" style="background:#f8f9fa">
+                                <i class="bi bi-cash-coin text-success"></i> Actual Cash Profit
+                                <div class="small text-muted fw-normal">Paid invoices only — money you actually received</div>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="ps-3 text-muted">Paid sales revenue</td>
+                            <td class="text-end text-success">{{ "{:,.2f}".format(paid.revenue) }}</td>
+                        </tr>
+                        <tr>
+                            <td class="ps-3 text-muted">Less: Cost of goods sold (paid)</td>
+                            <td class="text-end text-danger">({{ "{:,.2f}".format(paid.cogs) }})</td>
+                        </tr>
+                        <tr class="border-top">
+                            <td class="ps-3">Cash Gross Profit</td>
+                            <td class="text-end fw-bold {{ 'text-success' if cash_gross_profit >= 0 else 'text-danger' }}">
+                                {{ "{:,.2f}".format(cash_gross_profit) }}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="ps-3 text-muted">Less: Operating expenses</td>
+                            <td class="text-end text-danger">({{ "{:,.2f}".format(total_expenses) }})</td>
+                        </tr>
+                        {% if credit.revenue > 0 %}
+                        <tr class="text-muted small">
+                            <td class="ps-3">
+                                <i class="bi bi-info-circle"></i>
+                                Excluded: {{ "{:,.2f}".format(credit.revenue) }} unpaid (credit) revenue
+                                / {{ "{:,.2f}".format(credit.profit) }} unrealised profit
+                            </td>
+                            <td></td>
+                        </tr>
+                        {% endif %}
+                        <tr class="border-top border-2">
+                            <td class="fw-bold fs-5">Actual Net Cash Profit</td>
+                            <td class="text-end fw-bold fs-5 {{ 'text-success' if cash_net_profit >= 0 else 'text-danger' }}">
+                                {{ currency }} {{ "{:,.2f}".format(cash_net_profit) }}
                             </td>
                         </tr>
                     </tbody>
                 </table>
             </div>
             <div class="card-footer small text-muted">
-                <i class="bi bi-info-circle"></i> Revenue and cost come from sales invoices; expenses come from the
-                accounting ledger. Net profit = gross profit − operating expenses.
+                <i class="bi bi-info-circle"></i>
+                <strong>Net Profit</strong> includes all invoices (paid + credit).
+                <strong>Actual Cash Profit</strong> counts only invoices where payment was received,
+                minus all expenses — this is the real money in your pocket.
             </div>
         </div>
     </div>
