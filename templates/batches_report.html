@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Product Batches{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-boxes"></i> Product Batches</h2>
+
+<div class="row g-3 mb-3">
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">Total batches</h6>
+                <p class="fs-4 fw-bold mb-0">{{ batches|length }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-success">
+            <div class="card-body">
+                <h6 class="text-muted mb-1">With stock remaining</h6>
+                <p class="fs-4 fw-bold text-success mb-0">{{ active_count }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if batches %}
+<div class="mb-3">
+    <input type="text" class="form-control" id="batchSearch"
+           placeholder="Search product, lot #, supplier..." oninput="filterTable('batchSearch','batchTable')">
+</div>
+<div class="table-responsive">
+    <table class="table table-hover" id="batchTable">
+        <thead class="table-dark">
+            <tr>
+                <th>Product</th>
+                <th>Lot / Batch #</th>
+                <th>Supplier</th>
+                <th class="text-end">Cost ({{ currency }})</th>
+                <th class="text-end">Received</th>
+                <th class="text-end">Remaining</th>
+                <th>Expiry</th>
+                <th>Received At</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in batches %}
+            <tr class="{{ 'table-light text-muted' if b.qty_remaining <= 0 }}">
+                <td>{{ b.product_name }}</td>
+                <td>{{ b.batch_number or '—' }}</td>
+                <td>{{ b.supplier_name or '—' }}</td>
+                <td class="text-end">{{ "{:,.2f}".format(b.unit_cost) }}</td>
+                <td class="text-end">{{ b.qty_received }}</td>
+                <td class="text-end fw-bold">{{ b.qty_remaining }}</td>
+                <td>{{ b.expiry_date.strftime('%Y-%m-%d') if b.expiry_date else '—' }}</td>
+                <td>{{ b.received_at.strftime('%Y-%m-%d') if b.received_at else '—' }}</td>
+                <td>
+                    {% if b.qty_remaining <= 0 %}
+                    <span class="badge bg-secondary">Depleted</span>
+                    {% else %}
+                    <span class="badge bg-success">Active</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">No batches yet. Batches are created automatically the first time you receive stock or view this page.</div>
+{% endif %}
+{% endblock %}

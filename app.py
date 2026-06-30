@@ -484,6 +484,22 @@ def expiry_report():
     return render_template("expiry_report.html", products=products)
 
 
+@app.route("/batches")
+@login_required
+def batches_report():
+    pmap = {p["product_id"]: p for p in excel_db.get_all_products()}
+    smap = excel_db.supplier_lookup()
+    all_batches = excel_db.get_product_batches()
+    for b in all_batches:
+        product = pmap.get(b.get("product_id"))
+        b["product_name"] = product["name"] if product else f"#{b.get('product_id')}"
+        supplier = smap.get(int(b["supplier_id"])) if b.get("supplier_id") else None
+        b["supplier_name"] = supplier["name"] if supplier else None
+    all_batches.sort(key=lambda b: (b["product_name"] or "", str(b["received_at"] or "")))
+    active_count = sum(1 for b in all_batches if float(b.get("qty_remaining") or 0) > 0)
+    return render_template("batches_report.html", batches=all_batches, active_count=active_count)
+
+
 # ── Invoices ─────────────────────────────────────────────────────────
 
 def _attach_customer(invoice, cmap):

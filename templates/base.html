@@ -137,6 +137,9 @@
                     <a class="nav-link {{ 'active' if request.endpoint == 'stock_report' }}" href="{{ url_for('stock_report') }}">
                         <i class="bi bi-clipboard-data"></i> Stock Report
                     </a>
+                    <a class="nav-link {{ 'active' if request.endpoint == 'batches_report' }}" href="{{ url_for('batches_report') }}">
+                        <i class="bi bi-layers"></i> Product Batches
+                    </a>
                     <a class="nav-link {{ 'active' if request.endpoint == 'inventory_valuation' }}" href="{{ url_for('inventory_valuation') }}">
                         <i class="bi bi-boxes"></i> Stock Valuation
                     </a>
