@@ -32,15 +32,26 @@
                 <label class="form-label mb-1 small">&nbsp;</label>
                 <button type="submit" class="btn btn-dark w-100"><i class="bi bi-funnel"></i> Filter</button>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-2">
+                <label class="form-label mb-1 small">Payment Method</label>
+                <select class="form-select" id="paymentFilter" onchange="applyInvoiceFilters()">
+                    <option value="">All</option>
+                    <option value="cash">Cash</option>
+                    <option value="bank">Bank</option>
+                    <option value="credit">Credit (Unpaid)</option>
+                </select>
+            </div>
+            <div class="col-md-2">
                 <label class="form-label mb-1 small">Search</label>
                 <input type="text" class="form-control" id="invoicesSearch"
-                       placeholder="Customer, invoice #, payment..." oninput="filterTable('invoicesSearch','invoicesTable')">
+                       placeholder="Customer, invoice #..." oninput="applyInvoiceFilters()">
             </div>
         </form>
         <div class="text-end text-muted small mt-1">
-            {{ invoices|length }} invoice{{ 's' if invoices|length != 1 else '' }}
-            &mdash; Total: <strong>{{ currency }} {{ "{:,.2f}".format(invoices | sum(attribute='total')) }}</strong>
+            All invoices ({{ invoices|length }}): <strong>{{ currency }} {{ "{:,.2f}".format(invoices | sum(attribute='total')) }}</strong>
+            <span class="ms-3">Filtered (<span id="filteredCount">{{ invoices|length }}</span>):
+                <strong id="filteredTotal">{{ currency }} {{ "{:,.2f}".format(invoices | sum(attribute='total')) }}</strong>
+            </span>
         </div>
     </div>
 </div>
@@ -63,7 +74,7 @@
         </thead>
         <tbody>
             {% for inv in invoices %}
-            <tr>
+            <tr data-payment="{{ (inv.payment_method or '')|lower }}" data-total="{{ inv.total }}">
                 <td><strong>INV-{{ "%04d"|format(inv.invoice_id) }}</strong></td>
                 <td>{{ inv.created_at.strftime('%Y-%m-%d %H:%M') if inv.created_at else '-' }}</td>
                 <td>
@@ -100,4 +111,27 @@
 {% else %}
 <div class="alert alert-info">No invoices found for this period. <a href="{{ url_for('invoice_create') }}">Create a new sale</a>.</div>
 {% endif %}
+
+<script>
+function applyInvoiceFilters() {
+    const table = document.getElementById('invoicesTable');
+    if (!table) return;
+    const query = (document.getElementById('invoicesSearch').value || '').toLowerCase();
+    const method = document.getElementById('paymentFilter').value;
+    let count = 0;
+    let total = 0;
+    table.querySelectorAll('tbody tr').forEach(row => {
+        const matchesText = row.textContent.toLowerCase().includes(query);
+        const matchesMethod = !method || row.dataset.payment === method;
+        const visible = matchesText && matchesMethod;
+        row.style.display = visible ? '' : 'none';
+        if (visible) {
+            count += 1;
+            total += parseFloat(row.dataset.total || '0');
+        }
+    });
+    document.getElementById('filteredCount').textContent = count;
+    document.getElementById('filteredTotal').textContent = '{{ currency }} ' + total.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+</script>
 {% endblock %}
