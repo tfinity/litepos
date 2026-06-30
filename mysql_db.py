@@ -135,6 +135,10 @@ def init_workbook():
                     FOREIGN KEY (invoice_id) REFERENCES invoices(invoice_id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            try:
+                cur.execute("ALTER TABLE invoice_items ADD COLUMN batch_id INT")
+            except Exception:
+                pass  # column already exists
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS tenants (
                     tenant_id  INT AUTO_INCREMENT PRIMARY KEY,
@@ -220,6 +224,27 @@ def init_workbook():
                     FOREIGN KEY (purchase_id) REFERENCES purchase_invoices(purchase_id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS product_batches (
+                    batch_id      INT AUTO_INCREMENT PRIMARY KEY,
+                    tenant_id     INT,
+                    product_id    INT NOT NULL,
+                    batch_number  VARCHAR(100),
+                    supplier_id   INT,
+                    purchase_id   INT,
+                    unit_cost     DECIMAL(12,2) DEFAULT 0,
+                    qty_received  INT DEFAULT 0,
+                    qty_remaining INT DEFAULT 0,
+                    expiry_date   DATE,
+                    received_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            try:
+                cur.execute("CREATE INDEX idx_product_batches_tenant_product ON product_batches (tenant_id, product_id)")
+            except Exception:
+                pass  # index already exists
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS supplier_ledger (
                     entry_id    INT AUTO_INCREMENT PRIMARY KEY,
@@ -459,6 +484,59 @@ def delete_product(product_id):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM products WHERE product_id = %s AND tenant_id = %s",
                         (int(product_id), _tid()))
+
+
+def _ensure_legacy_batches():
+    """Auto-heal: give every product that has stock but no batch history a
+    single legacy batch reflecting its current (blended) cost/quantity, so
+    batch-aware code has something to read for pre-existing stock. Idempotent
+    — only creates a batch for a product that doesn't already have one."""
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.product_id, p.purchase_price, p.quantity, p.last_supplier_id,
+                       p.expiry_date, p.created_at
+                FROM products p
+                WHERE p.tenant_id = %s AND p.quantity > 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM product_batches b
+                      WHERE b.product_id = p.product_id AND b.tenant_id = p.tenant_id
+                  )
+            """, (tid,))
+            missing = cur.fetchall()
+            for p in missing:
+                cur.execute("""
+                    INSERT INTO product_batches
+                        (tenant_id, product_id, batch_number, supplier_id, purchase_id,
+                         unit_cost, qty_received, qty_remaining, expiry_date, received_at)
+                    VALUES (%s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
+                """, (tid, p["product_id"], f"P{p['product_id']}-LEGACY", p.get("last_supplier_id"),
+                      p.get("purchase_price") or 0, p.get("quantity") or 0, p.get("quantity") or 0,
+                      p.get("expiry_date"), p.get("created_at")))
+    return len(missing)
+
+
+def get_product_batches(product_id=None, active_only=False):
+    """Return product_batches rows, optionally for one product, optionally
+    only those with stock remaining. Auto-heals legacy (pre-batch) stock
+    into a synthetic batch on first read."""
+    _ensure_legacy_batches()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            q = "SELECT * FROM product_batches WHERE tenant_id = %s"
+            params = [_tid()]
+            if product_id is not None:
+                q += " AND product_id = %s"
+                params.append(int(product_id))
+            if active_only:
+                q += " AND qty_remaining > 0"
+            q += " ORDER BY received_at, batch_id"
+            cur.execute(q, params)
+            rows = cur.fetchall()
+    for b in rows:
+        b["expiry_date"] = _normalize_date(b.get("expiry_date"))
+    return rows
 
 
 def get_low_stock_products(threshold=10):

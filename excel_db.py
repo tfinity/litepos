@@ -102,6 +102,7 @@ ITEM_HEADERS = [
     "item_id", "invoice_id", "product_id", "product_name",
     "purchase_price", "counter_price", "quantity",
     "discount_amount", "line_total",
+    "batch_id",  # must be last for backward compat with older workbooks (short rows -> None)
 ]
 CREDIT_LEDGER_HEADERS = [
     "entry_id", "customer_id", "invoice_id", "type", "amount", "note", "created_at",
@@ -124,6 +125,10 @@ PURCHASE_ITEM_HEADERS = [
 ]
 SUPPLIER_LEDGER_HEADERS = [
     "entry_id", "supplier_id", "purchase_id", "type", "amount", "note", "created_at", "payment_method",
+]
+BATCH_HEADERS = [
+    "batch_id", "product_id", "batch_number", "supplier_id", "purchase_id",
+    "unit_cost", "qty_received", "qty_remaining", "expiry_date", "received_at",
 ]
 
 # ── Double-entry accounting ──────────────────────────────────────────
@@ -217,6 +222,8 @@ def init_workbook():
         ws14.append(PARTNER_HEADERS)
         ws15 = wb.create_sheet("PartnerTransactions")
         ws15.append(PARTNER_TXN_HEADERS)
+        ws16 = wb.create_sheet("ProductBatches")
+        ws16.append(BATCH_HEADERS)
         _save(wb)
         wb.close()
     ensure_workbook_schema()
@@ -275,6 +282,9 @@ def ensure_workbook_schema():
         if "PartnerTransactions" not in wb.sheetnames:
             wb.create_sheet("PartnerTransactions").append(PARTNER_TXN_HEADERS)
             changed = True
+        if "ProductBatches" not in wb.sheetnames:
+            wb.create_sheet("ProductBatches").append(BATCH_HEADERS)
+            changed = True
         # Add last_supplier_id column to Products if missing
         ws_prod = wb["Products"]
         if ws_prod.cell(row=1, column=11).value != "last_supplier_id":
@@ -294,6 +304,13 @@ def ensure_workbook_schema():
             pur_headers = [ws_pur.cell(row=1, column=c).value for c in range(1, ws_pur.max_column + 1)]
             if "payment_method" not in pur_headers:
                 ws_pur.cell(row=1, column=ws_pur.max_column + 1).value = "payment_method"
+                changed = True
+        # Add batch_id column to InvoiceItems if missing
+        if "InvoiceItems" in wb.sheetnames:
+            ws_ii = wb["InvoiceItems"]
+            ii_headers = [ws_ii.cell(row=1, column=c).value for c in range(1, ws_ii.max_column + 1)]
+            if "batch_id" not in ii_headers:
+                ws_ii.cell(row=1, column=ws_ii.max_column + 1).value = "batch_id"
                 changed = True
         if changed:
             _save(wb)
@@ -454,6 +471,77 @@ def delete_product(product_id):
                 break
         _save(wb)
         wb.close()
+
+
+def _ensure_legacy_batches():
+    """Auto-heal: give every product that has stock but no batch history a
+    single legacy batch reflecting its current (blended) cost/quantity, so
+    batch-aware code has something to read for pre-existing stock. Idempotent
+    — only creates a batch for a product that doesn't already have one."""
+    with _lock:
+        wb = _open()
+        if "ProductBatches" not in wb.sheetnames:
+            wb.create_sheet("ProductBatches").append(BATCH_HEADERS)
+        ws_b = wb["ProductBatches"]
+        ws_p = wb["Products"]
+
+        has_batch = set()
+        for row in ws_b.iter_rows(min_row=2, values_only=True):
+            if row[0] is None or row[1] is None:
+                continue
+            has_batch.add(int(row[1]))
+
+        batch_id = _next_id(ws_b)
+        created = 0
+        for row in ws_p.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            pid = int(row[0])
+            qty = int(row[5] or 0)
+            if qty <= 0 or pid in has_batch:
+                continue
+            purchase_price = float(row[2] or 0)
+            expiry = row[7] if len(row) > 7 else None
+            created_at = row[9] if len(row) > 9 else None
+            last_supplier_id = row[10] if len(row) > 10 else None
+            ws_b.append([
+                batch_id, pid, f"P{pid}-LEGACY", last_supplier_id, None,
+                purchase_price, qty, qty, expiry, created_at,
+            ])
+            batch_id += 1
+            created += 1
+        if created:
+            _save(wb)
+        wb.close()
+    return created
+
+
+def get_product_batches(product_id=None, active_only=False):
+    """Return ProductBatches rows, optionally for one product, optionally
+    only those with stock remaining. Auto-heals legacy (pre-batch) stock
+    into a synthetic batch on first read."""
+    _ensure_legacy_batches()
+    pid = int(product_id) if product_id is not None else None
+    with _lock:
+        wb = _open()
+        if "ProductBatches" not in wb.sheetnames:
+            wb.close()
+            return []
+        ws = wb["ProductBatches"]
+        batches = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            b = _row_to_dict(BATCH_HEADERS, row)
+            if pid is not None and (b.get("product_id") is None or int(b["product_id"]) != pid):
+                continue
+            if active_only and float(b.get("qty_remaining") or 0) <= 0:
+                continue
+            b["expiry_date"] = _normalize_date(b.get("expiry_date"))
+            batches.append(b)
+        wb.close()
+    batches.sort(key=lambda x: (x["received_at"] or datetime.min, x["batch_id"]))
+    return batches
 
 
 def get_low_stock_products(threshold=10):
