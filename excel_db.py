@@ -657,17 +657,28 @@ def get_low_stock_products(threshold=10):
 
 
 def get_expiry_products(days_ahead=30):
+    """Batch-level expiry: each batch carries its own expiry date, so a
+    product with stock from two different lots can show up twice here with
+    different dates/quantities. Only batches with stock remaining are shown."""
     today = date.today()
     cutoff = today + timedelta(days=days_ahead)
+    pmap = {p["product_id"]: p for p in get_all_products()}
     results = []
-    for p in get_all_products():
-        exp = p["expiry_date"]
-        if exp is None:
+    for b in get_product_batches(active_only=True):
+        exp = b.get("expiry_date")
+        if exp is None or exp > cutoff:
             continue
-        if exp <= cutoff:
-            p["expired"] = exp < today
-            p["days_left"] = (exp - today).days
-            results.append(p)
+        product = pmap.get(b.get("product_id"))
+        results.append({
+            "product_id": b.get("product_id"),
+            "name": product["name"] if product else f"#{b.get('product_id')}",
+            "category": product.get("category") if product else None,
+            "batch_number": b.get("batch_number"),
+            "quantity": b.get("qty_remaining"),
+            "expiry_date": exp,
+            "expired": exp < today,
+            "days_left": (exp - today).days,
+        })
     results.sort(key=lambda x: x["expiry_date"])
     return results
 
@@ -2506,26 +2517,34 @@ def _split_pl_totals(rows):
 
 def get_supplier_sales_pl(supplier_id, start_date, end_date):
     """
-    Returns sales P&L for products last supplied by a given supplier.
-    Groups by product. Returns per-product rows + totals.
+    Returns sales P&L for units actually sourced from a given supplier.
+    Each invoice line is attributed by the batch it was sold from
+    (batch.supplier_id) — exact, since different batches of the same product
+    can come from different suppliers. Lines from invoices predating batch
+    tracking (no batch_id) fall back to the product's current last_supplier_id
+    as a best-effort approximation. Groups by product. Returns per-product
+    rows + totals.
     """
     sid = int(supplier_id)
     start = start_date if isinstance(start_date, date) else datetime.strptime(str(start_date), "%Y-%m-%d").date()
     end = end_date if isinstance(end_date, date) else datetime.strptime(str(end_date), "%Y-%m-%d").date()
 
-    # Products supplied by this supplier
-    supplier_pids = set()
+    batch_supplier = {}
+    for b in get_product_batches():
+        if b.get("supplier_id") is not None:
+            batch_supplier[int(b["batch_id"])] = int(b["supplier_id"])
+
+    # Fallback only for legacy (pre-batch) lines: products currently supplied
+    # by this supplier, per the old crude last_supplier_id heuristic.
+    legacy_supplier_pids = set()
     for p in get_all_products():
         lsid = p.get("last_supplier_id")
         if lsid is not None:
             try:
                 if int(lsid) == sid:
-                    supplier_pids.add(int(p["product_id"]))
+                    legacy_supplier_pids.add(int(p["product_id"]))
             except (ValueError, TypeError):
                 pass
-
-    if not supplier_pids:
-        return [], {"revenue": 0, "cogs": 0, "profit": 0}
 
     # Invoice dates in range
     inv_dates = {}
@@ -2552,7 +2571,12 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
             if iid not in inv_dates:
                 continue
             pid = int(item["product_id"] or 0)
-            if pid not in supplier_pids:
+            bid = item.get("batch_id")
+            if bid is not None:
+                item_supplier = batch_supplier.get(int(bid))
+            else:
+                item_supplier = sid if pid in legacy_supplier_pids else None
+            if item_supplier != sid:
                 continue
             qty = int(item["quantity"] or 0)
             purchase_price = float(item["purchase_price"] or 0)

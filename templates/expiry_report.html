@@ -14,6 +14,7 @@
             <tr>
                 <th>ID</th>
                 <th>Product Name</th>
+                <th>Lot #</th>
                 <th>Category</th>
                 <th>Expiry Date</th>
                 <th>Days Left</th>
@@ -26,6 +27,7 @@
             <tr class="{% if p.expired %}table-danger{% else %}table-warning{% endif %}">
                 <td>{{ p.product_id }}</td>
                 <td>{{ p.name }}</td>
+                <td class="text-muted small">{{ p.batch_number or '—' }}</td>
                 <td>{{ p.category or '-' }}</td>
                 <td>{{ p.expiry_date }}</td>
                 <td class="fw-bold">

@@ -642,23 +642,29 @@ def get_low_stock_products(threshold=10):
 
 
 def get_expiry_products(days_ahead=30):
+    """Batch-level expiry: each batch carries its own expiry date, so a
+    product with stock from two different lots can show up twice here with
+    different dates/quantities. Only batches with stock remaining are shown."""
     today = date.today()
     cutoff = today + timedelta(days=days_ahead)
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM products WHERE tenant_id = %s AND expiry_date IS NOT NULL "
-                "AND expiry_date <= %s ORDER BY expiry_date",
-                (_tid(), cutoff)
-            )
-            rows = cur.fetchall()
+    pmap = {p["product_id"]: p for p in get_all_products()}
     results = []
-    for p in rows:
-        exp = _normalize_date(p["expiry_date"])
-        p["expiry_date"] = exp
-        p["expired"] = exp < today
-        p["days_left"] = (exp - today).days
-        results.append(p)
+    for b in get_product_batches(active_only=True):
+        exp = b.get("expiry_date")
+        if exp is None or exp > cutoff:
+            continue
+        product = pmap.get(b.get("product_id"))
+        results.append({
+            "product_id": b.get("product_id"),
+            "name": product["name"] if product else f"#{b.get('product_id')}",
+            "category": product.get("category") if product else None,
+            "batch_number": b.get("batch_number"),
+            "quantity": b.get("qty_remaining"),
+            "expiry_date": exp,
+            "expired": exp < today,
+            "days_left": (exp - today).days,
+        })
+    results.sort(key=lambda x: x["expiry_date"])
     return results
 
 
@@ -1936,6 +1942,12 @@ def search_product_sales(product_query, start_date, end_date):
 
 
 def get_supplier_sales_pl(supplier_id, start_date, end_date):
+    """Sales P&L for units actually sourced from a given supplier. Each line
+    is attributed by the batch it was sold from (batch.supplier_id) — exact,
+    since different batches of the same product can come from different
+    suppliers. Lines from invoices predating batch tracking (no batch_id)
+    fall back to the product's current last_supplier_id as a best-effort
+    approximation."""
     sid = int(supplier_id)
     with _conn() as conn:
         with conn.cursor() as cur:
@@ -1948,14 +1960,16 @@ def get_supplier_sales_pl(supplier_id, start_date, end_date):
                     ROUND(SUM(ii.line_total), 2) AS total_revenue,
                     ROUND(SUM(ii.line_total - ii.purchase_price * ii.quantity), 2) AS total_profit
                 FROM invoice_items ii
-                JOIN invoices i ON i.invoice_id = ii.invoice_id
-                JOIN products p ON p.product_id = ii.product_id
-                WHERE p.last_supplier_id = %s AND i.tenant_id = %s
+                JOIN invoices i ON i.invoice_id = ii.invoice_id AND i.tenant_id = ii.tenant_id
+                JOIN products p ON p.product_id = ii.product_id AND p.tenant_id = ii.tenant_id
+                LEFT JOIN product_batches b ON b.batch_id = ii.batch_id AND b.tenant_id = ii.tenant_id
+                WHERE i.tenant_id = %s
                   AND DATE(i.created_at) BETWEEN %s AND %s
                   AND (i.status IS NULL OR i.status <> 'deleted')
+                  AND (CASE WHEN ii.batch_id IS NOT NULL THEN b.supplier_id ELSE p.last_supplier_id END) = %s
                 GROUP BY ii.product_id, ii.product_name
                 ORDER BY ii.product_name
-            """, (sid, _tid(), start_date, end_date))
+            """, (_tid(), start_date, end_date, sid))
             rows = cur.fetchall()
     total_revenue = round(sum(float(r["total_revenue"]) for r in rows), 2)
     total_cogs = round(sum(float(r["total_cogs"]) for r in rows), 2)
