@@ -1188,6 +1188,9 @@ def purchase_detail(purchase_id):
         return redirect(url_for("purchases_list"))
     supplier = excel_db.get_supplier(int(purchase["supplier_id"])) if purchase.get("supplier_id") else None
     items = excel_db.get_purchase_invoice_items(purchase_id)
+    batch_labels = {b["batch_id"]: b["batch_number"] for b in excel_db.get_product_batches()}
+    for it in items:
+        it["batch_number"] = batch_labels.get(it.get("batch_id"))
     return render_template("purchase_detail.html", purchase=purchase, supplier=supplier, items=items)
 
 

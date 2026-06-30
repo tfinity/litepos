@@ -61,6 +61,7 @@
             <thead class="table-dark">
                 <tr>
                     <th>Product</th>
+                    <th>Lot #</th>
                     <th class="text-end">Qty</th>
                     <th class="text-end">Unit Cost ({{ currency }})</th>
                     <th class="text-end">Subtotal ({{ currency }})</th>
@@ -70,6 +71,7 @@
                 {% for item in items %}
                 <tr>
                     <td>{{ item.product_name or item.product_id }}</td>
+                    <td class="text-muted small">{{ item.batch_number or '—' }}</td>
                     <td class="text-end">{{ item.quantity }}</td>
                     <td class="text-end">{{ "{:,.2f}".format(item.unit_cost) }}</td>
                     <td class="text-end fw-bold">{{ "{:,.2f}".format(item.line_total) }}</td>
@@ -78,7 +80,7 @@
             </tbody>
             <tfoot class="table-light">
                 <tr>
-                    <td colspan="3" class="text-end fw-bold">Total</td>
+                    <td colspan="4" class="text-end fw-bold">Total</td>
                     <td class="text-end fw-bold">{{ currency }} {{ "{:,.2f}".format(purchase.total_amount) }}</td>
                 </tr>
             </tfoot>

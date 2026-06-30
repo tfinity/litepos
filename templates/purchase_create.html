@@ -79,19 +79,33 @@
                     <div class="col-md-5">
                         <input type="text" id="productSearch" class="form-control" placeholder="Search product name or ID..." autocomplete="off">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-2">
                         <label class="form-label small text-muted mb-1">Qty</label>
                         <input type="number" id="addQty" class="form-control" value="1" min="1" step="1">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-2">
                         <label class="form-label small text-muted mb-1">Purchase Price</label>
                         <input type="number" id="addPrice" class="form-control" step="0.01" min="0" placeholder="0.00">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small text-muted mb-1">Lot / Batch # <span class="text-muted">(optional)</span></label>
+                        <input type="text" id="addLot" class="form-control" placeholder="e.g. supplier lot #">
                     </div>
                     <div class="col-md-1">
                         <button type="button" class="btn btn-dark w-100" onclick="addToCart()">
                             <i class="bi bi-plus"></i>
                         </button>
                     </div>
+                </div>
+                <div class="row g-2 align-items-end mt-1">
+                    <div class="col-md-3 offset-md-9">
+                        <label class="form-label small text-muted mb-1">Expiry date <span class="text-muted">(optional)</span></label>
+                        <input type="date" id="addExpiry" class="form-control">
+                    </div>
+                </div>
+                <div class="form-text">
+                    <i class="bi bi-info-circle"></i> Reusing the same lot # for a product adds to that batch.
+                    A different price under the same lot # will be rejected — use a new lot # for a different rate.
                 </div>
                 <div id="searchResults" class="list-group mt-2" style="display:none; position:absolute; z-index:1000; max-height:260px; overflow-y:auto; width:50%"></div>
             </div>
@@ -105,6 +119,7 @@
                     <thead class="table-light">
                         <tr>
                             <th>Product</th>
+                            <th>Lot #</th>
                             <th class="text-end">Qty</th>
                             <th class="text-end">Purchase Price</th>
                             <th class="text-end">Subtotal</th>
@@ -112,7 +127,7 @@
                         </tr>
                     </thead>
                     <tbody id="cartBody">
-                        <tr><td colspan="5" class="text-center text-muted py-4">No items added yet.</td></tr>
+                        <tr><td colspan="6" class="text-center text-muted py-4">No items added yet.</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -295,18 +310,26 @@ function addToCart() {
     if (!selectedProduct) { alert('Select a product first.'); return; }
     const qty = parseInt(document.getElementById('addQty').value) || 1;
     const price = parseFloat(addPriceInput.value) || 0;
+    const lot = document.getElementById('addLot').value.trim();
+    const expiry = document.getElementById('addExpiry').value || '';
     if (price <= 0) { alert('Enter a purchase price.'); return; }
-    const existing = cart.find(c => c.product_id === selectedProduct.product_id);
+    // Different batches of the same product are separate cart lines — only
+    // merge when product AND lot # match (blank lot # never merges, since
+    // each no-lot receipt becomes its own batch).
+    const existing = lot ? cart.find(c => c.product_id === selectedProduct.product_id && c.lot === lot) : null;
     if (existing) {
         existing.qty += qty;
         existing.price = price;
+        if (expiry) existing.expiry = expiry;
     } else {
-        cart.push({ product_id: selectedProduct.product_id, name: selectedProduct.name, qty, price });
+        cart.push({ product_id: selectedProduct.product_id, name: selectedProduct.name, qty, price, lot, expiry });
     }
     renderCart();
     searchInput.value = '';
     addPriceInput.value = '';
     document.getElementById('addQty').value = 1;
+    document.getElementById('addLot').value = '';
+    document.getElementById('addExpiry').value = '';
     selectedProduct = null;
 }
 
@@ -318,7 +341,7 @@ function removeFromCart(idx) {
 function renderCart() {
     const tbody = document.getElementById('cartBody');
     if (!cart.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">No items added yet.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No items added yet.</td></tr>';
         document.getElementById('summaryItems').textContent = '0';
         document.getElementById('summaryTotal').textContent = '0.00';
         document.getElementById('submitBtn').disabled = true;
@@ -330,6 +353,7 @@ function renderCart() {
         total += sub;
         return `<tr>
             <td>${item.name}</td>
+            <td class="text-muted small">${item.lot || '<em>auto</em>'}</td>
             <td class="text-end">${item.qty}</td>
             <td class="text-end">${item.price.toFixed(2)}</td>
             <td class="text-end fw-bold">${sub.toFixed(2)}</td>
@@ -410,7 +434,10 @@ async function submitPurchase() {
         payment_method: document.getElementById('paymentMethod').value,
         purchase_date: document.getElementById('purchaseDate').value || null,
         direct_amount: direct ? directAmount : null,
-        items: direct ? [] : cart.map(c => ({ product_id: c.product_id, quantity: c.qty, unit_cost: c.price }))
+        items: direct ? [] : cart.map(c => ({
+            product_id: c.product_id, quantity: c.qty, unit_cost: c.price,
+            batch_number: c.lot || null, expiry_date: c.expiry || null,
+        }))
     };
     try {
         const res = await fetch('{{ url_for("purchase_create") }}', {

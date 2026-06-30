@@ -224,6 +224,10 @@ def init_workbook():
                     FOREIGN KEY (purchase_id) REFERENCES purchase_invoices(purchase_id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            try:
+                cur.execute("ALTER TABLE purchase_invoice_items ADD COLUMN batch_id INT")
+            except Exception:
+                pass  # column already exists
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS product_batches (
                     batch_id      INT AUTO_INCREMENT PRIMARY KEY,
@@ -515,6 +519,26 @@ def _ensure_legacy_batches():
                       p.get("purchase_price") or 0, p.get("quantity") or 0, p.get("quantity") or 0,
                       p.get("expiry_date"), p.get("created_at")))
     return len(missing)
+
+
+def _recompute_product_cache(cur, tid, product_id):
+    """Recompute a product's cached quantity/purchase_price from its batches'
+    remaining stock (weighted-average cost). Runs on the caller's open cursor
+    so it's part of the same transaction as the batch changes."""
+    cur.execute("""
+        SELECT COALESCE(SUM(qty_remaining), 0) AS total_qty,
+               COALESCE(SUM(qty_remaining * unit_cost), 0) AS total_value
+        FROM product_batches WHERE product_id = %s AND tenant_id = %s
+    """, (product_id, tid))
+    row = cur.fetchone()
+    total_qty = int(row["total_qty"] or 0)
+    if total_qty > 0:
+        avg_cost = round(float(row["total_value"] or 0) / total_qty, 2)
+        cur.execute("UPDATE products SET quantity=%s, purchase_price=%s WHERE product_id=%s AND tenant_id=%s",
+                    (total_qty, avg_cost, product_id, tid))
+    else:
+        cur.execute("UPDATE products SET quantity=%s WHERE product_id=%s AND tenant_id=%s",
+                    (total_qty, product_id, tid))
 
 
 def get_product_batches(product_id=None, active_only=False):
@@ -1459,7 +1483,7 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
                 raise ValueError("Supplier not found.")
 
             total_amount = 0.0
-            line_entries = []
+            prepared = []  # (pid, pname, qty, unit_cost, line_total, batch_number, expiry)
 
             for item in items:
                 pid = int(item["product_id"])
@@ -1471,19 +1495,9 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
                     raise ValueError(f"Product ID {pid} not found")
                 line_total = round(unit_cost * qty, 2)
                 total_amount += line_total
-                line_entries.append((pid, prod["name"], qty, unit_cost, line_total))
-                # Weighted-average cost: blend old stock value with the new receipt
-                old_qty = int(prod["quantity"] or 0)
-                old_cost = float(prod["purchase_price"] or 0)
-                new_qty = old_qty + qty
-                if old_qty > 0 and old_cost > 0 and new_qty > 0:
-                    new_cost = round((old_qty * old_cost + qty * unit_cost) / new_qty, 2)
-                else:
-                    new_cost = unit_cost
-                cur.execute(
-                    "UPDATE products SET quantity=%s, purchase_price=%s, last_supplier_id=%s WHERE product_id=%s AND tenant_id=%s",
-                    (new_qty, new_cost, sid, pid, tid)
-                )
+                batch_number = str(item.get("batch_number") or "").strip()
+                expiry = item.get("expiry_date") or None
+                prepared.append((pid, prod["name"], qty, unit_cost, line_total, batch_number, expiry))
 
             if not items and direct_amount is not None:
                 total_amount = float(direct_amount)
@@ -1496,12 +1510,64 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             """, (tid, sid, when, total_amount, (notes or "").strip(), payment_method))
             purchase_id = cur.lastrowid
 
-            for pid, pname, qty, uc, lt in line_entries:
+            line_entries = []
+            touched_pids = set()
+            for pid, pname, qty, unit_cost, line_total, batch_number, expiry in prepared:
+                batch_id_used = None
+                if batch_number:
+                    # Reusing a lot number adds to that batch; reusing it at a
+                    # different cost is treated as a mistake, not a silent average.
+                    cur.execute("""
+                        SELECT batch_id, unit_cost, qty_received, qty_remaining FROM product_batches
+                        WHERE product_id=%s AND tenant_id=%s AND LOWER(batch_number)=LOWER(%s)
+                        FOR UPDATE
+                    """, (pid, tid, batch_number))
+                    match = cur.fetchone()
+                    if match:
+                        if round(float(match["unit_cost"] or 0), 2) != round(unit_cost, 2):
+                            raise ValueError(
+                                f"Lot '{batch_number}' for {pname} already exists at cost "
+                                f"{float(match['unit_cost'] or 0):.2f} — use a different lot number "
+                                f"if this is a different rate."
+                            )
+                        cur.execute("""
+                            UPDATE product_batches SET qty_received = qty_received + %s,
+                                   qty_remaining = qty_remaining + %s
+                            WHERE batch_id = %s
+                        """, (qty, qty, match["batch_id"]))
+                        batch_id_used = match["batch_id"]
+                    else:
+                        cur.execute("""
+                            INSERT INTO product_batches
+                                (tenant_id, product_id, batch_number, supplier_id, purchase_id,
+                                 unit_cost, qty_received, qty_remaining, expiry_date, received_at)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """, (tid, pid, batch_number, sid, purchase_id, unit_cost, qty, qty, expiry, when))
+                        batch_id_used = cur.lastrowid
+                else:
+                    cur.execute("""
+                        INSERT INTO product_batches
+                            (tenant_id, product_id, batch_number, supplier_id, purchase_id,
+                             unit_cost, qty_received, qty_remaining, expiry_date, received_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, (tid, pid, None, sid, purchase_id, unit_cost, qty, qty, expiry, when))
+                    batch_id_used = cur.lastrowid
+                    cur.execute("UPDATE product_batches SET batch_number=%s WHERE batch_id=%s",
+                                (f"P{pid}-B{batch_id_used}", batch_id_used))
+                line_entries.append((pid, pname, qty, unit_cost, line_total, batch_id_used))
+                cur.execute("UPDATE products SET last_supplier_id=%s WHERE product_id=%s AND tenant_id=%s",
+                            (sid, pid, tid))
+                touched_pids.add(pid)
+
+            for pid in touched_pids:
+                _recompute_product_cache(cur, tid, pid)
+
+            for pid, pname, qty, uc, lt, batch_id in line_entries:
                 cur.execute("""
                     INSERT INTO purchase_invoice_items
-                        (tenant_id, purchase_id, product_id, product_name, quantity, unit_cost, line_total)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s)
-                """, (tid, purchase_id, pid, pname, qty, uc, lt))
+                        (tenant_id, purchase_id, product_id, product_name, quantity, unit_cost, line_total, batch_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (tid, purchase_id, pid, pname, qty, uc, lt, batch_id))
 
             # Always record the purchase in the supplier ledger (relationship history).
             # Use the user's note if given, else a generic reference.
@@ -1589,18 +1655,54 @@ def delete_purchase_invoice(purchase_id):
     tid = _tid()
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT product_id, quantity FROM purchase_invoice_items WHERE purchase_id=%s AND tenant_id=%s", (pid, tid))
+            cur.execute(
+                "SELECT product_id, quantity, batch_id FROM purchase_invoice_items WHERE purchase_id=%s AND tenant_id=%s",
+                (pid, tid)
+            )
             items = cur.fetchall()
+            touched_pids = set()
             for item in items:
-                cur.execute(
-                    "UPDATE products SET quantity = GREATEST(0, quantity - %s) WHERE product_id=%s AND tenant_id=%s",
-                    (int(item["quantity"]), item["product_id"], tid)
-                )
+                qty = int(item["quantity"])
+                prod_id = item["product_id"]
+                batch_id = item.get("batch_id")
+
+                target_batch_id = None
+                if batch_id is not None:
+                    target_batch_id = batch_id
+                else:
+                    # Purchase predates batch tracking — reverse against that
+                    # product's legacy batch (purchase_id IS NULL) if one exists.
+                    cur.execute("""
+                        SELECT batch_id FROM product_batches
+                        WHERE product_id=%s AND tenant_id=%s AND purchase_id IS NULL
+                        LIMIT 1
+                    """, (prod_id, tid))
+                    legacy = cur.fetchone()
+                    if legacy:
+                        target_batch_id = legacy["batch_id"]
+
+                if target_batch_id is not None:
+                    cur.execute("""
+                        UPDATE product_batches
+                        SET qty_received = GREATEST(0, qty_received - %s),
+                            qty_remaining = GREATEST(0, qty_remaining - %s)
+                        WHERE batch_id = %s AND tenant_id = %s
+                    """, (qty, qty, target_batch_id, tid))
+                    touched_pids.add(prod_id)
+                else:
+                    # No batch to reverse against at all — fall back to the
+                    # pre-batch behaviour of decrementing stock directly.
+                    cur.execute(
+                        "UPDATE products SET quantity = GREATEST(0, quantity - %s) WHERE product_id=%s AND tenant_id=%s",
+                        (qty, prod_id, tid)
+                    )
+            for prod_id in touched_pids:
+                _recompute_product_cache(cur, tid, prod_id)
+
             cur.execute("DELETE FROM journal_entries WHERE source_type='purchase' AND source_id=%s AND tenant_id=%s", (pid, tid))
             cur.execute("DELETE FROM supplier_ledger WHERE purchase_id=%s AND tenant_id=%s", (pid, tid))
             cur.execute("DELETE FROM purchase_invoice_items WHERE purchase_id=%s AND tenant_id=%s", (pid, tid))
             cur.execute("DELETE FROM purchase_invoices WHERE purchase_id=%s AND tenant_id=%s", (pid, tid))
-        conn.commit()
 
 
 def delete_supplier_payment(entry_id):

@@ -122,6 +122,7 @@ PURCHASE_HEADERS = [
 ]
 PURCHASE_ITEM_HEADERS = [
     "item_id", "purchase_id", "product_id", "product_name", "quantity", "unit_cost", "line_total",
+    "batch_id",  # must be last for backward compat with older workbooks (short rows -> None)
 ]
 SUPPLIER_LEDGER_HEADERS = [
     "entry_id", "supplier_id", "purchase_id", "type", "amount", "note", "created_at", "payment_method",
@@ -311,6 +312,13 @@ def ensure_workbook_schema():
             ii_headers = [ws_ii.cell(row=1, column=c).value for c in range(1, ws_ii.max_column + 1)]
             if "batch_id" not in ii_headers:
                 ws_ii.cell(row=1, column=ws_ii.max_column + 1).value = "batch_id"
+                changed = True
+        # Add batch_id column to PurchaseItems if missing
+        if "PurchaseItems" in wb.sheetnames:
+            ws_pi = wb["PurchaseItems"]
+            pi_headers = [ws_pi.cell(row=1, column=c).value for c in range(1, ws_pi.max_column + 1)]
+            if "batch_id" not in pi_headers:
+                ws_pi.cell(row=1, column=ws_pi.max_column + 1).value = "batch_id"
                 changed = True
         if changed:
             _save(wb)
@@ -514,6 +522,36 @@ def _ensure_legacy_batches():
             _save(wb)
         wb.close()
     return created
+
+
+def _recompute_product_cache(wb, product_id):
+    """Recompute a product's cached quantity/purchase_price from its batches'
+    remaining stock (weighted-average cost). Must run inside an already-open
+    workbook (caller owns _lock/_save/close). No-op if the product has no
+    batches at all (nothing to derive from)."""
+    pid = int(product_id)
+    if "ProductBatches" not in wb.sheetnames:
+        return
+    ws_b = wb["ProductBatches"]
+    total_qty = 0
+    total_value = 0.0
+    for row in ws_b.iter_rows(min_row=2):
+        if row[0].value is None or row[1].value is None:
+            continue
+        if int(row[1].value) != pid:
+            continue
+        qty_rem = int(row[7].value or 0)
+        cost = float(row[5].value or 0)
+        total_qty += qty_rem
+        total_value += qty_rem * cost
+    avg_cost = round(total_value / total_qty, 2) if total_qty > 0 else None
+    ws_p = wb["Products"]
+    for row in ws_p.iter_rows(min_row=2):
+        if row[0].value is not None and int(row[0].value) == pid:
+            row[5].value = total_qty
+            if avg_cost is not None:
+                row[2].value = avg_cost
+            break
 
 
 def get_product_batches(product_id=None, active_only=False):
@@ -1808,10 +1846,15 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             if row[0].value is not None:
                 product_rows[int(row[0].value)] = row
 
+        if "ProductBatches" not in wb.sheetnames:
+            wb.create_sheet("ProductBatches").append(BATCH_HEADERS)
+        ws_b = wb["ProductBatches"]
+
         purchase_id = _next_id(ws_purch)
         item_id_start = _next_id(ws_pitems)
         total_amount = 0.0
         line_entries = []
+        touched_pids = set()
 
         for i, item in enumerate(items):
             pid = int(item["product_id"])
@@ -1823,21 +1866,55 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             prow = product_rows[pid]
             line_total = round(unit_cost * qty, 2)
             total_amount += line_total
+
+            batch_number = str(item.get("batch_number") or "").strip()
+            expiry = item.get("expiry_date")
+            if isinstance(expiry, str) and expiry:
+                expiry = datetime.strptime(expiry, "%Y-%m-%d").date()
+            elif not isinstance(expiry, (date, datetime)):
+                expiry = None
+
+            batch_id_used = None
+            if batch_number:
+                # Reusing a lot number adds to that batch; reusing it at a
+                # different cost is treated as a mistake, not a silent average.
+                match_row = None
+                for brow in ws_b.iter_rows(min_row=2):
+                    if brow[0].value is None or brow[1].value is None:
+                        continue
+                    if int(brow[1].value) == pid and \
+                       str(brow[2].value or "").strip().lower() == batch_number.lower():
+                        match_row = brow
+                        break
+                if match_row is not None:
+                    existing_cost = float(match_row[5].value or 0)
+                    if round(existing_cost, 2) != round(unit_cost, 2):
+                        wb.close()
+                        raise ValueError(
+                            f"Lot '{batch_number}' for {prow[1].value} already exists at cost "
+                            f"{existing_cost:.2f} — use a different lot number if this is a different rate."
+                        )
+                    match_row[6].value = int(match_row[6].value or 0) + qty
+                    match_row[7].value = int(match_row[7].value or 0) + qty
+                    batch_id_used = int(match_row[0].value)
+                else:
+                    batch_id_used = _next_id(ws_b)
+                    ws_b.append([batch_id_used, pid, batch_number, sid, purchase_id,
+                                unit_cost, qty, qty, expiry, when])
+            else:
+                batch_id_used = _next_id(ws_b)
+                ws_b.append([batch_id_used, pid, f"P{pid}-B{batch_id_used}", sid, purchase_id,
+                            unit_cost, qty, qty, expiry, when])
+
             line_entries.append([
                 item_id_start + i, purchase_id, pid,
-                prow[1].value, qty, unit_cost, line_total,
+                prow[1].value, qty, unit_cost, line_total, batch_id_used,
             ])
-            # Weighted-average cost: blend old stock value with the new receipt
-            old_qty = int(prow[5].value or 0)
-            old_cost = float(prow[2].value or 0)
-            new_qty = old_qty + qty
-            if old_qty > 0 and old_cost > 0 and new_qty > 0:
-                new_cost = round((old_qty * old_cost + qty * unit_cost) / new_qty, 2)
-            else:
-                new_cost = unit_cost
-            prow[5].value = new_qty
-            prow[2].value = new_cost
             prow[10].value = sid
+            touched_pids.add(pid)
+
+        for pid in touched_pids:
+            _recompute_product_cache(wb, pid)
 
         if not items and direct_amount is not None:
             total_amount = float(direct_amount)
@@ -1963,6 +2040,7 @@ def delete_purchase_invoice(purchase_id):
         ws_items = wb["PurchaseItems"]
         ws_sl = wb["SupplierLedger"] if "SupplierLedger" in wb.sheetnames else None
         ws_prod = wb["Products"]
+        ws_b = wb["ProductBatches"] if "ProductBatches" in wb.sheetnames else None
 
         # Build product row lookup (col 5 = quantity)
         product_rows = {}
@@ -1970,20 +2048,47 @@ def delete_purchase_invoice(purchase_id):
             if row[0].value is not None:
                 product_rows[int(row[0].value)] = row
 
-        # Reverse stock quantities and collect item rows to delete
+        # Reverse stock: deduct from the specific batch this item created (or,
+        # for purchases predating batch tracking, from that product's legacy
+        # batch) and collect item rows to delete.
         item_rows_to_delete = []
+        touched_pids = set()
         for idx, row in enumerate(ws_items.iter_rows(min_row=2), start=2):
             if row[0].value is None:
                 continue
             if int(row[1].value) == pid:
                 prod_id = int(row[2].value)
                 qty = int(row[4].value or 0)
-                if prod_id in product_rows:
+                batch_id = row[7].value if len(row) > 7 else None
+
+                target = None
+                if ws_b is not None:
+                    if batch_id is not None:
+                        for brow in ws_b.iter_rows(min_row=2):
+                            if brow[0].value is not None and int(brow[0].value) == int(batch_id):
+                                target = brow
+                                break
+                    else:
+                        for brow in ws_b.iter_rows(min_row=2):
+                            if brow[0].value is None or brow[1].value is None:
+                                continue
+                            if int(brow[1].value) == prod_id and brow[4].value is None:
+                                target = brow
+                                break
+                if target is not None:
+                    target[6].value = max(0, int(target[6].value or 0) - qty)
+                    target[7].value = max(0, int(target[7].value or 0) - qty)
+                    touched_pids.add(prod_id)
+                elif prod_id in product_rows:
+                    # No batch to reverse against at all — fall back to the
+                    # pre-batch behaviour of decrementing stock directly.
                     prow = product_rows[prod_id]
                     prow[5].value = max(0, int(prow[5].value or 0) - qty)
                 item_rows_to_delete.append(idx)
         for idx in sorted(item_rows_to_delete, reverse=True):
             ws_items.delete_rows(idx, 1)
+        for prod_id in touched_pids:
+            _recompute_product_cache(wb, prod_id)
 
         # Delete supplier ledger entries for this purchase
         if ws_sl:
