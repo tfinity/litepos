@@ -962,13 +962,14 @@ def credit_ledger():
 def record_credit_payment(customer_id):
     amount_str = request.form.get("amount", "").strip()
     note = request.form.get("note", "").strip()
+    payment_method = request.form.get("payment_method", "cash").strip().lower()
     try:
         amount = float(amount_str)
     except (ValueError, TypeError):
         flash("Invalid amount.", "danger")
         return redirect(url_for("credit_ledger"))
     try:
-        excel_db.add_ledger_payment(customer_id, amount, note)
+        excel_db.add_ledger_payment(customer_id, amount, note, payment_method)
         flash(f"Payment of {CURRENCY} {amount:.2f} recorded.", "success")
     except ValueError as e:
         flash(str(e), "danger")

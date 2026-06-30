@@ -105,6 +105,7 @@ ITEM_HEADERS = [
 ]
 CREDIT_LEDGER_HEADERS = [
     "entry_id", "customer_id", "invoice_id", "type", "amount", "note", "created_at",
+    "payment_method",  # must be last for backward compat with older workbooks (short rows -> None)
 ]
 USER_HEADERS = [
     "user_id", "tenant_id", "username", "password_hash", "role", "is_active", "created_at",
@@ -1223,7 +1224,7 @@ def get_credit_ledger(customer_id=None):
     return entries
 
 
-def add_ledger_payment(customer_id, amount, note=""):
+def add_ledger_payment(customer_id, amount, note="", payment_method="cash"):
     """Record a cash payment from a customer (credit entry, reduces their balance)."""
     cid = normalize_customer_id(customer_id)
     if cid is None:
@@ -1233,6 +1234,7 @@ def add_ledger_payment(customer_id, amount, note=""):
         raise ValueError("Amount must be positive.")
     if not get_customer(cid):
         raise ValueError("Customer not found.")
+    pm = (payment_method or "cash").strip().lower()
     with _lock:
         wb = _open()
         if "CreditLedger" not in wb.sheetnames:
@@ -1240,7 +1242,7 @@ def add_ledger_payment(customer_id, amount, note=""):
             ws_cl.append(CREDIT_LEDGER_HEADERS)
         ws_cl = wb["CreditLedger"]
         entry_id = _next_id(ws_cl)
-        ws_cl.append([entry_id, cid, None, "credit", amount, (note or "").strip(), datetime.now()])
+        ws_cl.append([entry_id, cid, None, "credit", amount, (note or "").strip(), datetime.now(), pm])
         _save(wb)
         wb.close()
     return entry_id
@@ -2095,6 +2097,11 @@ def get_sales_pl_report(start_date, end_date):
     start = start_date if isinstance(start_date, date) else datetime.strptime(str(start_date), "%Y-%m-%d").date()
     end = end_date if isinstance(end_date, date) else datetime.strptime(str(end_date), "%Y-%m-%d").date()
 
+    # A credit invoice that has since been fully paid off (realized) should be
+    # treated as "paid" here, not stuck in "credit" forever just because it was
+    # originally booked on credit.
+    realized, _ = _realized_credit_invoice_ids()
+
     # Collect invoice_ids in range + their dates and payment method
     inv_meta = {}
     for inv in get_all_invoices():
@@ -2106,9 +2113,11 @@ def get_sales_pl_report(start_date, end_date):
         else:
             continue
         if start <= inv_date <= end:
-            inv_meta[int(inv["invoice_id"])] = {
+            iid = int(inv["invoice_id"])
+            was_credit = str(inv.get("payment_method") or "").strip().lower() == "credit"
+            inv_meta[iid] = {
                 "date": inv_date,
-                "is_credit": str(inv.get("payment_method") or "").strip().lower() == "credit",
+                "is_credit": was_credit and iid not in realized,
             }
 
     if not inv_meta:
@@ -2701,31 +2710,52 @@ def _existing_journal_sources():
 
 def _realized_credit_invoice_ids():
     """Credit invoices considered paid: a customer's payments cover them oldest
-    first. Returns the set of invoice_ids fully covered by received payments."""
-    paid_by_cust = {}
+    first. Returns (realized_set, breakdown) where breakdown maps invoice_id ->
+    {"cash": x, "bank": y} showing which account(s) actually received the money,
+    based on the payment_method recorded on the covering CreditLedger entries."""
+    payments_by_cust = {}
     for e in get_credit_ledger():
         if e.get("type") == "credit":
             cid = normalize_customer_id(e.get("customer_id"))
             if cid is not None:
-                paid_by_cust[cid] = paid_by_cust.get(cid, 0.0) + float(e.get("amount") or 0)
+                pm = str(e.get("payment_method") or "cash").strip().lower()
+                pm = pm if pm == "bank" else "cash"
+                payments_by_cust.setdefault(cid, []).append({
+                    "remaining": float(e.get("amount") or 0),
+                    "method": pm,
+                    "entry_id": int(e["entry_id"]),
+                })
     credit_by_cust = {}
     for inv in get_all_invoices():
         if str(inv.get("payment_method") or "").strip().lower() == "credit":
             cid = normalize_customer_id(inv.get("customer_id"))
             if cid is not None:
                 credit_by_cust.setdefault(cid, []).append(inv)
+
     realized = set()
+    breakdown = {}
     for cid, invs in credit_by_cust.items():
         invs.sort(key=lambda x: int(x["invoice_id"]))
-        running = 0.0
-        tp = round(paid_by_cust.get(cid, 0.0), 2)
+        payments = sorted(payments_by_cust.get(cid, []), key=lambda p: p["entry_id"])
+        ppos = 0
         for inv in invs:
-            running = round(running + float(inv.get("total") or 0), 2)
-            if running <= tp:
-                realized.add(int(inv["invoice_id"]))
+            need = round(float(inv.get("total") or 0), 2)
+            alloc = {"cash": 0.0, "bank": 0.0}
+            while need > 0.0001 and ppos < len(payments):
+                pay = payments[ppos]
+                take = min(need, pay["remaining"])
+                alloc[pay["method"]] = round(alloc[pay["method"]] + take, 2)
+                pay["remaining"] = round(pay["remaining"] - take, 2)
+                need = round(need - take, 2)
+                if pay["remaining"] <= 0.0001:
+                    ppos += 1
+            if need <= 0.0001:
+                iid = int(inv["invoice_id"])
+                realized.add(iid)
+                breakdown[iid] = alloc
             else:
                 break
-    return realized
+    return realized, breakdown
 
 
 def sync_journal_from_operations():
@@ -2745,7 +2775,7 @@ def sync_journal_from_operations():
         d = val.date() if isinstance(val, datetime) else val
         return d is None or d >= books_start
 
-    realized = _realized_credit_invoice_ids()
+    realized, realized_breakdown = _realized_credit_invoice_ids()
     pending = []  # (date, description, source_type, source_id, [lines])
 
     # Sales: cash sales post at once; a credit sale posts only once it is paid.
@@ -2765,12 +2795,20 @@ def sync_journal_from_operations():
         tax = round(float(inv.get("tax_amount") or 0), 2)
         delivery = round(float(inv.get("delivery_charges") or 0), 2)
         total = round(float(inv.get("total") or 0), 2)
-        pm = str(inv.get("payment_method") or "cash").strip().lower()
-        recv_acct = BANK if pm == "bank" else CASH
-        lines = [
-            {"account_id": recv_acct, "debit": total},
-            {"account_id": SALES, "credit": net + delivery},
-        ]
+        lines = []
+        if is_credit:
+            # Realized credit sale: split the receipt across whichever
+            # account(s) the customer's covering payments actually went to.
+            alloc = realized_breakdown.get(sid, {"cash": total, "bank": 0.0})
+            if alloc["cash"] > 0:
+                lines.append({"account_id": CASH, "debit": alloc["cash"]})
+            if alloc["bank"] > 0:
+                lines.append({"account_id": BANK, "debit": alloc["bank"]})
+        else:
+            pm = str(inv.get("payment_method") or "cash").strip().lower()
+            recv_acct = BANK if pm == "bank" else CASH
+            lines.append({"account_id": recv_acct, "debit": total})
+        lines.append({"account_id": SALES, "credit": net + delivery})
         if tax > 0:
             lines.append({"account_id": TAX, "credit": tax})
         if cogs > 0:

@@ -184,6 +184,7 @@
                         <th>Date</th>
                         <th>Type</th>
                         <th>Invoice</th>
+                        <th>Method</th>
                         <th class="text-end">Amount ({{ currency }})</th>
                         <th>Note</th>
                     </tr>
@@ -202,6 +203,15 @@
                         <td>
                             {% if e.invoice_id %}
                             <a href="{{ url_for('invoice_detail', invoice_id=e.invoice_id) }}">INV-{{ "%04d"|format(e.invoice_id) }}</a>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {% if e.type == 'credit' %}
+                                {% if e.payment_method == 'bank' %}
+                                <span class="badge bg-info text-dark">Bank</span>
+                                {% else %}
+                                <span class="badge bg-secondary">Cash</span>
+                                {% endif %}
                             {% else %}—{% endif %}
                         </td>
                         <td class="text-end {{ 'text-danger' if e.type == 'debit' else 'text-success' }}">
@@ -233,6 +243,13 @@
                         <label class="form-label">Amount ({{ currency }})</label>
                         <input type="number" name="amount" class="form-control" min="0.01" step="0.01"
                                value="{{ credit_balance }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Received in</label>
+                        <select name="payment_method" class="form-select">
+                            <option value="cash">Cash</option>
+                            <option value="bank">Bank</option>
+                        </select>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Note (optional)</label>

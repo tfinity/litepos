@@ -178,6 +178,10 @@ def init_workbook():
                 cur.execute("ALTER TABLE credit_ledger MODIFY type VARCHAR(20) NOT NULL")
             except Exception:
                 pass  # already widened
+            try:
+                cur.execute("ALTER TABLE credit_ledger ADD COLUMN payment_method VARCHAR(20)")
+            except Exception:
+                pass  # column already exists
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS suppliers (
                     supplier_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -973,7 +977,7 @@ def get_credit_ledger(customer_id=None):
             return cur.fetchall()
 
 
-def add_ledger_payment(customer_id, amount, note=""):
+def add_ledger_payment(customer_id, amount, note="", payment_method="cash"):
     cid = normalize_customer_id(customer_id)
     if cid is None:
         raise ValueError("Invalid customer.")
@@ -982,12 +986,13 @@ def add_ledger_payment(customer_id, amount, note=""):
         raise ValueError("Amount must be positive.")
     if not get_customer(cid):
         raise ValueError("Customer not found.")
+    pm = (payment_method or "cash").strip().lower()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO credit_ledger (tenant_id, customer_id, invoice_id, type, amount, note, created_at)
-                VALUES (%s, %s, NULL, 'credit', %s, %s, %s)
-            """, (_tid(), cid, amount, (note or "").strip(), datetime.now()))
+                INSERT INTO credit_ledger (tenant_id, customer_id, invoice_id, type, amount, note, created_at, payment_method)
+                VALUES (%s, %s, NULL, 'credit', %s, %s, %s, %s)
+            """, (_tid(), cid, amount, (note or "").strip(), datetime.now(), pm))
             return cur.lastrowid
 
 
@@ -1650,10 +1655,15 @@ def get_sales_pl_report(start_date, end_date):
                 ORDER BY i.created_at, i.invoice_id
             """, (_tid(), start_date, end_date))
             rows = cur.fetchall()
-    for r in rows:
-        r["is_credit"] = str(r.get("payment_method") or "").strip().lower() == "credit"
     if not rows:
         return [], _empty_pl_totals()
+    # A credit invoice that has since been fully paid off (realized) should be
+    # treated as "paid" here, not stuck in "credit" forever just because it was
+    # originally booked on credit.
+    realized, _ = _realized_credit_invoice_ids()
+    for r in rows:
+        was_credit = str(r.get("payment_method") or "").strip().lower() == "credit"
+        r["is_credit"] = was_credit and int(r["invoice_id"]) not in realized
     return rows, _split_pl_totals(rows)
 
 
@@ -2100,31 +2110,52 @@ def _existing_journal_sources():
 
 def _realized_credit_invoice_ids():
     """Credit invoices considered paid: a customer's payments cover them oldest
-    first. Returns the set of invoice_ids fully covered by received payments."""
-    paid_by_cust = {}
+    first. Returns (realized_set, breakdown) where breakdown maps invoice_id ->
+    {"cash": x, "bank": y} showing which account(s) actually received the money,
+    based on the payment_method recorded on the covering credit_ledger entries."""
+    payments_by_cust = {}
     for e in get_credit_ledger():
         if e.get("type") == "credit":
             cid = normalize_customer_id(e.get("customer_id"))
             if cid is not None:
-                paid_by_cust[cid] = paid_by_cust.get(cid, 0.0) + float(e.get("amount") or 0)
+                pm = str(e.get("payment_method") or "cash").strip().lower()
+                pm = pm if pm == "bank" else "cash"
+                payments_by_cust.setdefault(cid, []).append({
+                    "remaining": float(e.get("amount") or 0),
+                    "method": pm,
+                    "entry_id": int(e["entry_id"]),
+                })
     credit_by_cust = {}
     for inv in get_all_invoices():
         if str(inv.get("payment_method") or "").strip().lower() == "credit":
             cid = normalize_customer_id(inv.get("customer_id"))
             if cid is not None:
                 credit_by_cust.setdefault(cid, []).append(inv)
+
     realized = set()
+    breakdown = {}
     for cid, invs in credit_by_cust.items():
         invs.sort(key=lambda x: int(x["invoice_id"]))
-        running = 0.0
-        tp = round(paid_by_cust.get(cid, 0.0), 2)
+        payments = sorted(payments_by_cust.get(cid, []), key=lambda p: p["entry_id"])
+        ppos = 0
         for inv in invs:
-            running = round(running + float(inv.get("total") or 0), 2)
-            if running <= tp:
-                realized.add(int(inv["invoice_id"]))
+            need = round(float(inv.get("total") or 0), 2)
+            alloc = {"cash": 0.0, "bank": 0.0}
+            while need > 0.0001 and ppos < len(payments):
+                pay = payments[ppos]
+                take = min(need, pay["remaining"])
+                alloc[pay["method"]] = round(alloc[pay["method"]] + take, 2)
+                pay["remaining"] = round(pay["remaining"] - take, 2)
+                need = round(need - take, 2)
+                if pay["remaining"] <= 0.0001:
+                    ppos += 1
+            if need <= 0.0001:
+                iid = int(inv["invoice_id"])
+                realized.add(iid)
+                breakdown[iid] = alloc
             else:
                 break
-    return realized
+    return realized, breakdown
 
 
 def sync_journal_from_operations():
@@ -2143,7 +2174,7 @@ def sync_journal_from_operations():
 
     # Cash-basis for credit sales: a credit sale only reaches the books once the
     # customer's payments cover it (oldest invoice first). Cash sales post at once.
-    realized = _realized_credit_invoice_ids()
+    realized, realized_breakdown = _realized_credit_invoice_ids()
 
     pending = []
     for inv in get_all_invoices():
@@ -2159,9 +2190,20 @@ def sync_journal_from_operations():
         tax = round(float(inv.get("tax_amount") or 0), 2)
         delivery = round(float(inv.get("delivery_charges") or 0), 2)
         total = round(float(inv.get("total") or 0), 2)
-        pm = str(inv.get("payment_method") or "cash").strip().lower()
-        recv_acct = BANK if pm == "bank" else CASH
-        lines = [(recv_acct, total, 0.0), (SALES, 0.0, net + delivery)]
+        lines = []
+        if is_credit:
+            # Realized credit sale: split the receipt across whichever
+            # account(s) the customer's covering payments actually went to.
+            alloc = realized_breakdown.get(sid, {"cash": total, "bank": 0.0})
+            if alloc["cash"] > 0:
+                lines.append((CASH, alloc["cash"], 0.0))
+            if alloc["bank"] > 0:
+                lines.append((BANK, alloc["bank"], 0.0))
+        else:
+            pm = str(inv.get("payment_method") or "cash").strip().lower()
+            recv_acct = BANK if pm == "bank" else CASH
+            lines.append((recv_acct, total, 0.0))
+        lines.append((SALES, 0.0, net + delivery))
         if tax > 0:
             lines.append((TAX, 0.0, tax))
         if cogs > 0:
