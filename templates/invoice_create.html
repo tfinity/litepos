@@ -55,6 +55,10 @@
                         <small class="d-block"><strong>MRP:</strong> <span id="selMRP"></span> {{ currency }}</small>
                         <small class="d-block"><strong>Stock:</strong> <span id="selStock"></span></small>
                     </div>
+                    <div class="mb-2" id="selBatchWrap" style="display:none">
+                        <label class="form-label small mb-1">Batch <span class="text-muted">(which lot to sell from)</span></label>
+                        <select id="selBatch" class="form-select form-select-sm"></select>
+                    </div>
                     <input type="hidden" id="selId">
                     <div class="row g-2 mb-2">
                         <div class="col-md-6">
@@ -439,6 +443,45 @@ document.getElementById('searchInput').addEventListener('input', function() {
     }, 300);
 });
 
+function populateBatchSelect(product) {
+    const wrap = document.getElementById('selBatchWrap');
+    const sel = document.getElementById('selBatch');
+    const batches = product.batches || [];
+    if (!batches.length) {
+        wrap.style.display = 'none';
+        sel.innerHTML = '';
+        return;
+    }
+    let soonestId = null, soonestDate = null;
+    batches.forEach(b => {
+        if (b.expiry_date && (!soonestDate || b.expiry_date < soonestDate)) {
+            soonestDate = b.expiry_date;
+            soonestId = b.batch_id;
+        }
+    });
+    sel.innerHTML = batches.map(b => {
+        const tag = b.batch_id === soonestId ? ' — expires soonest' : '';
+        const exp = b.expiry_date ? `, exp ${b.expiry_date}` : '';
+        return `<option value="${b.batch_id}" data-cost="${b.unit_cost}" data-qty="${b.qty_remaining}">
+            ${escapeHtml(b.batch_number || ('#' + b.batch_id))} — qty ${b.qty_remaining} @ ${CURRENCY} ${b.unit_cost.toFixed(2)}${exp}${tag}
+        </option>`;
+    }).join('');
+    wrap.style.display = 'block';
+    onBatchChange();
+}
+
+function onBatchChange() {
+    const sel = document.getElementById('selBatch');
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt) return;
+    const cost = parseFloat(opt.dataset.cost) || 0;
+    const qty = parseInt(opt.dataset.qty) || 0;
+    document.getElementById('selPurchase').textContent = cost.toFixed(2);
+    document.getElementById('selStock').textContent = qty;
+    document.getElementById('selQty').max = quotationMode ? 999999 : qty;
+}
+document.getElementById('selBatch').addEventListener('change', onBatchChange);
+
 function selectProduct(product) {
     document.getElementById('searchResults').innerHTML = '';
     document.getElementById('searchInput').value = '';
@@ -455,6 +498,7 @@ function selectProduct(product) {
     document.getElementById('selDiscount').value = 0;
     document.getElementById('selSalePrice').value = listCounter.toFixed(2);
     document.getElementById('discountWarning').style.display = 'none';
+    populateBatchSelect(product);  // overrides selPurchase/selStock to the picked batch's values, if any
     document.getElementById('selSalePrice').focus();
 }
 
@@ -473,6 +517,10 @@ function addToCart() {
     const qty = parseInt(document.getElementById('selQty').value);
     const discAmt = parseFloat(document.getElementById('selDiscount').value) || 0;
     const maxStock = parseInt(document.getElementById('selStock').textContent);
+    const batchSel = document.getElementById('selBatch');
+    const batchId = batchSel.value ? parseInt(batchSel.value) : null;
+    const batchOpt = batchSel.options[batchSel.selectedIndex];
+    const batchLabel = batchOpt ? batchOpt.textContent.trim() : null;
 
     if (qty <= 0 || (!quotationMode && qty > maxStock)) {
         alert('Invalid quantity. Available stock: ' + maxStock);
@@ -481,9 +529,10 @@ function addToCart() {
 
     const discountedPrice = unitPrice - discAmt;
 
-    // Merge if same product, same per-unit sale price, and same discount
+    // Merge if same product, same batch, same per-unit sale price, and same discount
     const existing = cart.find(item =>
         item.product_id === id &&
+        item.batch_id === batchId &&
         item.discount_per_unit === discAmt &&
         Math.abs(item.unit_price - unitPrice) < 1e-9
     );
@@ -509,6 +558,8 @@ function addToCart() {
             discount_total: discAmt * qty,
             line_total: discountedPrice * qty,
             max_stock: maxStock,
+            batch_id: batchId,
+            batch_label: batchLabel,
         });
     }
 
@@ -596,8 +647,11 @@ function renderCart() {
             const costLine = showCost
                 ? `<div class="small text-muted"><i class="bi bi-tag"></i> Purch: ${item.purchase_price.toFixed(2)} · List: ${item.list_counter.toFixed(2)} · MRP: ${(item.mrp || 0).toFixed(2)}</div>`
                 : '';
+            const batchHint = item.batch_label
+                ? `<div class="small text-muted"><i class="bi bi-layers"></i> ${escapeHtml(item.batch_label)}</div>`
+                : '';
             return `<tr>
-                <td>${escapeHtml(item.product_name)}${costLine}${listHint}${stockHint}</td>
+                <td>${escapeHtml(item.product_name)}${batchHint}${costLine}${listHint}${stockHint}</td>
                 <td>
                     <input type="number" class="form-control form-control-sm" style="width:95px"
                            value="${item.unit_price.toFixed(2)}" min="0" step="0.01"
@@ -656,6 +710,7 @@ function printQuotation() {
             quantity: item.quantity,
             discount_amount: item.discount_per_unit,
             unit_price: item.unit_price,
+            batch_id: item.batch_id || null,
         })),
         delivery_charges: parseFloat(document.getElementById('deliveryCharges').value) || 0,
     };
@@ -686,6 +741,7 @@ function submitInvoice() {
             quantity: item.quantity,
             discount_amount: item.discount_per_unit,
             unit_price: item.unit_price,
+            batch_id: item.batch_id || null,
         })),
         payment_method: document.getElementById('paymentMethod').value,
         delivery_charges: parseFloat(document.getElementById('deliveryCharges').value) || 0,

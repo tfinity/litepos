@@ -541,6 +541,73 @@ def _recompute_product_cache(cur, tid, product_id):
                     (total_qty, product_id, tid))
 
 
+def _deplete_batch_for_sale(cur, tid, pid, qty, requested_batch_id, product_name):
+    """Pick a batch to sell qty units of product pid from, decrement its
+    qty_remaining, and return (batch_id, unit_cost). If requested_batch_id is
+    given, sell from exactly that batch (staff picked it at the till). If not,
+    auto-pick the oldest active batch that alone covers qty. Raises ValueError
+    if there isn't enough stock in the selected (or any single) batch."""
+    if requested_batch_id is not None:
+        cur.execute("""
+            SELECT batch_id, batch_number, unit_cost, qty_remaining FROM product_batches
+            WHERE batch_id=%s AND product_id=%s AND tenant_id=%s FOR UPDATE
+        """, (requested_batch_id, pid, tid))
+        target = cur.fetchone()
+        if not target:
+            raise ValueError(f"Selected batch not found for '{product_name}'.")
+        remaining = int(target["qty_remaining"] or 0)
+        if qty > remaining:
+            raise ValueError(
+                f"Not enough stock in batch '{target['batch_number']}' for '{product_name}': "
+                f"requested {qty}, available {remaining}"
+            )
+        cur.execute("UPDATE product_batches SET qty_remaining = qty_remaining - %s WHERE batch_id=%s",
+                    (qty, target["batch_id"]))
+        return target["batch_id"], float(target["unit_cost"] or 0)
+
+    cur.execute("""
+        SELECT batch_id, unit_cost, qty_remaining FROM product_batches
+        WHERE product_id=%s AND tenant_id=%s AND qty_remaining > 0
+        ORDER BY received_at, batch_id FOR UPDATE
+    """, (pid, tid))
+    candidates = cur.fetchall()
+    for c in candidates:
+        remaining = int(c["qty_remaining"] or 0)
+        if remaining >= qty:
+            cur.execute("UPDATE product_batches SET qty_remaining = qty_remaining - %s WHERE batch_id=%s",
+                        (qty, c["batch_id"]))
+            return c["batch_id"], float(c["unit_cost"] or 0)
+
+    total_available = sum(int(c["qty_remaining"] or 0) for c in candidates)
+    raise ValueError(
+        f"Not enough stock for '{product_name}': requested {qty}, available {total_available}"
+    )
+
+
+def _restore_batch_for_sale(cur, tid, pid, qty, batch_id=None):
+    """Return qty units back to the batch they were sold from (or that
+    product's legacy batch if batch_id is unknown — pre-batch invoices)."""
+    target_id = None
+    if batch_id is not None:
+        cur.execute("SELECT batch_id FROM product_batches WHERE batch_id=%s AND tenant_id=%s",
+                    (batch_id, tid))
+        row = cur.fetchone()
+        if row:
+            target_id = row["batch_id"]
+    if target_id is None:
+        cur.execute("""
+            SELECT batch_id FROM product_batches
+            WHERE product_id=%s AND tenant_id=%s AND purchase_id IS NULL
+            LIMIT 1
+        """, (pid, tid))
+        row = cur.fetchone()
+        if row:
+            target_id = row["batch_id"]
+    if target_id is not None:
+        cur.execute("UPDATE product_batches SET qty_remaining = qty_remaining + %s WHERE batch_id=%s",
+                    (qty, target_id))
+
+
 def get_product_batches(product_id=None, active_only=False):
     """Return product_batches rows, optionally for one product, optionally
     only those with stock remaining. Auto-heals legacy (pre-batch) stock
@@ -822,13 +889,16 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                         "Deleting it would leave the customer overpaid. Record a refund or "
                         "adjust their balance first, then delete.")
 
-            # Reverse stock
+            # Reverse stock — back to the specific batch each item was sold
+            # from (or that product's legacy batch for pre-batch invoices).
             cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s AND tenant_id = %s", (iid, tid))
+            touched_pids = set()
             for item in cur.fetchall():
-                cur.execute(
-                    "UPDATE products SET quantity = quantity + %s WHERE product_id = %s AND tenant_id = %s",
-                    (int(item["quantity"]), int(item["product_id"]), tid)
-                )
+                pid = int(item["product_id"])
+                _restore_batch_for_sale(cur, tid, pid, int(item["quantity"]), item.get("batch_id"))
+                touched_pids.add(pid)
+            for pid in touched_pids:
+                _recompute_product_cache(cur, tid, pid)
             # Remove the credit-sale debit for this invoice (payments have NULL invoice_id)
             cur.execute("DELETE FROM credit_ledger WHERE invoice_id = %s AND type = 'debit' AND tenant_id = %s",
                         (iid, tid))
@@ -872,26 +942,28 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None, delivery_c
             subtotal = 0.0
             discount_total = 0.0
             line_entries = []
+            touched_pids = set()
 
             for item in items:
                 pid = int(item["product_id"])
                 qty = int(item["quantity"])
                 discount_per_unit = float(item.get("discount_amount", 0))
+                requested_batch_id = item.get("batch_id")
 
                 cur.execute("SELECT * FROM products WHERE product_id = %s AND tenant_id = %s FOR UPDATE",
                             (pid, tid))
                 prod = cur.fetchone()
                 if not prod:
                     raise ValueError(f"Product ID {pid} not found")
-                available = int(prod["quantity"])
-                if qty > available:
-                    raise ValueError(
-                        f"Not enough stock for '{prod['name']}': "
-                        f"requested {qty}, available {available}"
-                    )
-
-                purchase_price = float(prod["purchase_price"])
                 catalog_counter = float(prod["counter_price"])
+
+                # Picks (or auto-picks) a batch and deducts qty from it; the
+                # batch's own cost is the COGS for this line, not the blended
+                # product-level cache.
+                batch_id_used, purchase_price = _deplete_batch_for_sale(
+                    cur, tid, pid, qty, requested_batch_id, prod["name"])
+                touched_pids.add(pid)
+
                 raw_unit = item.get("unit_price")
                 unit_price = float(raw_unit) if raw_unit not in (None, "") else catalog_counter
 
@@ -912,9 +984,11 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None, delivery_c
                 subtotal += unit_price * qty
                 discount_total += line_discount
 
-                line_entries.append((pid, prod["name"], purchase_price, unit_price, qty, line_discount, round(line_total, 2)))
-                cur.execute("UPDATE products SET quantity = quantity - %s WHERE product_id = %s AND tenant_id = %s",
-                            (qty, pid, tid))
+                line_entries.append((pid, prod["name"], purchase_price, unit_price, qty, line_discount,
+                                     round(line_total, 2), batch_id_used))
+
+            for pid in touched_pids:
+                _recompute_product_cache(cur, tid, pid)
 
             net = round(subtotal - discount_total, 2)
             tax_amount = round(net * tax_rate, 2)
@@ -927,11 +1001,11 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None, delivery_c
             """, (tid, datetime.now(), round(subtotal, 2), round(discount_total, 2), tax_rate, tax_amount, total, payment_method, cid, delivery))
             invoice_id = cur.lastrowid
 
-            for pid, pname, pp, up, qty, ld, lt in line_entries:
+            for pid, pname, pp, up, qty, ld, lt, batch_id in line_entries:
                 cur.execute("""
-                    INSERT INTO invoice_items (tenant_id, invoice_id, product_id, product_name, purchase_price, counter_price, quantity, discount_amount, line_total)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (tid, invoice_id, pid, pname, pp, up, qty, ld, lt))
+                    INSERT INTO invoice_items (tenant_id, invoice_id, product_id, product_name, purchase_price, counter_price, quantity, discount_amount, line_total, batch_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (tid, invoice_id, pid, pname, pp, up, qty, ld, lt, batch_id))
 
             if payment_method == "Credit" and cid is not None:
                 cur.execute("""
@@ -956,19 +1030,11 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
             cur.execute("SELECT * FROM invoice_items WHERE invoice_id = %s AND tenant_id = %s", (iid, tid))
             old_items = cur.fetchall()
 
-            # Preserve original cost (COGS) per product so editing never rewrites
-            # historical cost with today's price.
-            old_cost_by_pid = {}
+            # Return stock from old items to the exact batch each was sold
+            # from (or that product's legacy batch for pre-batch invoices).
+            touched_pids = {int(old["product_id"]) for old in old_items}
             for old in old_items:
-                old_cost_by_pid.setdefault(int(old["product_id"]),
-                                           float(old.get("purchase_price") or 0))
-
-            # Return stock from old items
-            for old in old_items:
-                cur.execute(
-                    "UPDATE products SET quantity = quantity + %s WHERE product_id = %s AND tenant_id = %s",
-                    (int(old["quantity"]), int(old["product_id"]), tid)
-                )
+                _restore_batch_for_sale(cur, tid, int(old["product_id"]), int(old["quantity"]), old.get("batch_id"))
 
             old_payment = invoice.get("payment_method")
             old_cid = normalize_customer_id(invoice.get("customer_id"))
@@ -991,23 +1057,19 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                 pid = int(item["product_id"])
                 qty = int(item["quantity"])
                 discount_per_unit = float(item.get("discount_amount", 0))
+                requested_batch_id = item.get("batch_id")
 
                 cur.execute("SELECT * FROM products WHERE product_id = %s AND tenant_id = %s FOR UPDATE",
                             (pid, tid))
                 prod = cur.fetchone()
                 if not prod:
                     raise ValueError(f"Product ID {pid} not found")
-                available = int(prod["quantity"])
-                if qty > available:
-                    raise ValueError(
-                        f"Not enough stock for '{prod['name']}': "
-                        f"requested {qty}, available {available}"
-                    )
-
-                # Keep original cost for products already on this invoice;
-                # use current cost only for newly added lines.
-                purchase_price = old_cost_by_pid.get(pid, float(prod["purchase_price"]))
                 catalog_counter = float(prod["counter_price"])
+
+                batch_id_used, purchase_price = _deplete_batch_for_sale(
+                    cur, tid, pid, qty, requested_batch_id, prod["name"])
+                touched_pids.add(pid)
+
                 raw_unit = item.get("unit_price")
                 unit_price = float(raw_unit) if raw_unit not in (None, "") else catalog_counter
 
@@ -1026,20 +1088,22 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                 subtotal += unit_price * qty
                 discount_total += line_discount
 
-                line_entries.append((pid, prod["name"], purchase_price, unit_price, qty, line_discount, round(line_total, 2)))
-                cur.execute("UPDATE products SET quantity = quantity - %s WHERE product_id = %s AND tenant_id = %s",
-                            (qty, pid, tid))
+                line_entries.append((pid, prod["name"], purchase_price, unit_price, qty, line_discount,
+                                     round(line_total, 2), batch_id_used))
+
+            for pid in touched_pids:
+                _recompute_product_cache(cur, tid, pid)
 
             net = round(subtotal - discount_total, 2)
             tax_amount = round(net * tax_rate, 2)
             total = round(net + tax_amount, 2)
 
             cur.execute("DELETE FROM invoice_items WHERE invoice_id = %s AND tenant_id = %s", (iid, tid))
-            for pid, pname, pp, up, qty, ld, lt in line_entries:
+            for pid, pname, pp, up, qty, ld, lt, batch_id in line_entries:
                 cur.execute("""
-                    INSERT INTO invoice_items (tenant_id, invoice_id, product_id, product_name, purchase_price, counter_price, quantity, discount_amount, line_total)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (tid, iid, pid, pname, pp, up, qty, ld, lt))
+                    INSERT INTO invoice_items (tenant_id, invoice_id, product_id, product_name, purchase_price, counter_price, quantity, discount_amount, line_total, batch_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (tid, iid, pid, pname, pp, up, qty, ld, lt, batch_id))
 
             cur.execute("""
                 UPDATE invoices SET

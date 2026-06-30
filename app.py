@@ -594,6 +594,9 @@ def invoice_detail(invoice_id):
     cmap = excel_db.customer_lookup()
     _attach_customer(invoice, cmap)
     items = excel_db.get_invoice_items(invoice_id)
+    batch_labels = {b["batch_id"]: b["batch_number"] for b in excel_db.get_product_batches()}
+    for it in items:
+        it["batch_number"] = batch_labels.get(it.get("batch_id"))
     return render_template("invoice_detail.html",
                            invoice=invoice, items=items)
 
@@ -870,11 +873,23 @@ def api_product_search():
     if len(q) < 1:
         return jsonify([])
     results = excel_db.search_products(q)
-    for r in results:
-        if r.get("expiry_date"):
-            r["expiry_date"] = str(r["expiry_date"])
-        if r.get("created_at"):
-            r["created_at"] = str(r["created_at"])
+    if results:
+        batches_by_pid = {}
+        for b in excel_db.get_product_batches(active_only=True):
+            batches_by_pid.setdefault(b["product_id"], []).append(b)
+        for r in results:
+            if r.get("expiry_date"):
+                r["expiry_date"] = str(r["expiry_date"])
+            if r.get("created_at"):
+                r["created_at"] = str(r["created_at"])
+            blist = batches_by_pid.get(r["product_id"], [])
+            r["batches"] = [{
+                "batch_id": b["batch_id"],
+                "batch_number": b["batch_number"],
+                "unit_cost": float(b["unit_cost"] or 0),
+                "qty_remaining": int(b["qty_remaining"] or 0),
+                "expiry_date": str(b["expiry_date"]) if b.get("expiry_date") else None,
+            } for b in blist]
     return jsonify(results)
 
 

@@ -47,6 +47,7 @@
                     <thead>
                         <tr>
                             <th>Product</th>
+                            <th>Lot #</th>
                             <th class="text-end">Purchase</th>
                             <th class="text-end">Counter</th>
                             <th class="text-center">Qty</th>
@@ -58,6 +59,7 @@
                         {% for item in items %}
                         <tr>
                             <td>{{ item.product_name }}</td>
+                            <td class="text-muted small">{{ item.batch_number or '—' }}</td>
                             <td class="text-end text-muted">{{ "{:,.2f}".format(item.purchase_price) }}</td>
                             <td class="text-end">{{ "{:,.2f}".format(item.counter_price) }}</td>
                             <td class="text-center">{{ item.quantity }}</td>
@@ -70,29 +72,29 @@
                     </tbody>
                     <tfoot>
                         <tr>
-                            <td colspan="5" class="text-end">Subtotal:</td>
+                            <td colspan="6" class="text-end">Subtotal:</td>
                             <td class="text-end">{{ currency }} {{ "{:,.2f}".format(invoice.subtotal) }}</td>
                         </tr>
                         {% if invoice.discount_total %}
                         <tr class="text-success">
-                            <td colspan="5" class="text-end">Discount:</td>
+                            <td colspan="6" class="text-end">Discount:</td>
                             <td class="text-end">-{{ currency }} {{ "{:,.2f}".format(invoice.discount_total) }}</td>
                         </tr>
                         {% endif %}
                         {% if invoice.tax_rate and invoice.tax_amount %}
                         <tr>
-                            <td colspan="5" class="text-end">Tax ({{ (invoice.tax_rate * 100)|int }}%):</td>
+                            <td colspan="6" class="text-end">Tax ({{ (invoice.tax_rate * 100)|int }}%):</td>
                             <td class="text-end">{{ currency }} {{ "{:,.2f}".format(invoice.tax_amount) }}</td>
                         </tr>
                         {% endif %}
                         {% if invoice.delivery_charges %}
                         <tr>
-                            <td colspan="5" class="text-end">Delivery charges:</td>
+                            <td colspan="6" class="text-end">Delivery charges:</td>
                             <td class="text-end">{{ currency }} {{ "{:,.2f}".format(invoice.delivery_charges) }}</td>
                         </tr>
                         {% endif %}
                         <tr class="fw-bold fs-5">
-                            <td colspan="5" class="text-end">Total:</td>
+                            <td colspan="6" class="text-end">Total:</td>
                             <td class="text-end text-primary">{{ currency }} {{ "{:,.2f}".format(invoice.total) }}</td>
                         </tr>
                     </tfoot>

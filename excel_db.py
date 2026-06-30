@@ -554,6 +554,76 @@ def _recompute_product_cache(wb, product_id):
             break
 
 
+def _deplete_batch_for_sale(wb, pid, qty, requested_batch_id, product_name):
+    """Pick a batch to sell qty units of product pid from, decrement its
+    qty_remaining, and return (batch_id, unit_cost). If requested_batch_id is
+    given, sell from exactly that batch (staff picked it at the till). If not,
+    auto-pick the oldest active batch that alone covers qty. Raises ValueError
+    if there isn't enough stock in the selected (or any single) batch."""
+    if "ProductBatches" not in wb.sheetnames:
+        wb.create_sheet("ProductBatches").append(BATCH_HEADERS)
+    ws_b = wb["ProductBatches"]
+
+    if requested_batch_id is not None:
+        target = None
+        for brow in ws_b.iter_rows(min_row=2):
+            if brow[0].value is not None and int(brow[0].value) == int(requested_batch_id):
+                target = brow
+                break
+        if target is None or target[1].value is None or int(target[1].value) != pid:
+            raise ValueError(f"Selected batch not found for '{product_name}'.")
+        remaining = int(target[7].value or 0)
+        if qty > remaining:
+            raise ValueError(
+                f"Not enough stock in batch '{target[2].value}' for '{product_name}': "
+                f"requested {qty}, available {remaining}"
+            )
+        target[7].value = remaining - qty
+        return int(target[0].value), float(target[5].value or 0)
+
+    candidates = []
+    for brow in ws_b.iter_rows(min_row=2):
+        if brow[0].value is None or brow[1].value is None:
+            continue
+        if int(brow[1].value) != pid or int(brow[7].value or 0) <= 0:
+            continue
+        candidates.append(brow)
+    candidates.sort(key=lambda r: (r[9].value or datetime.min, int(r[0].value)))
+    for brow in candidates:
+        remaining = int(brow[7].value or 0)
+        if remaining >= qty:
+            brow[7].value = remaining - qty
+            return int(brow[0].value), float(brow[5].value or 0)
+
+    total_available = sum(int(b[7].value or 0) for b in candidates)
+    raise ValueError(
+        f"Not enough stock for '{product_name}': requested {qty}, available {total_available}"
+    )
+
+
+def _restore_batch_for_sale(wb, pid, qty, batch_id=None):
+    """Return qty units back to the batch they were sold from (or that
+    product's legacy batch if batch_id is unknown — pre-batch invoices)."""
+    if "ProductBatches" not in wb.sheetnames:
+        return
+    ws_b = wb["ProductBatches"]
+    target = None
+    if batch_id is not None:
+        for brow in ws_b.iter_rows(min_row=2):
+            if brow[0].value is not None and int(brow[0].value) == int(batch_id):
+                target = brow
+                break
+    if target is None:
+        for brow in ws_b.iter_rows(min_row=2):
+            if brow[0].value is None or brow[1].value is None:
+                continue
+            if int(brow[1].value) == pid and brow[4].value is None:
+                target = brow
+                break
+    if target is not None:
+        target[7].value = int(target[7].value or 0) + qty
+
+
 def get_product_batches(product_id=None, active_only=False):
     """Return ProductBatches rows, optionally for one product, optionally
     only those with stock remaining. Auto-heals legacy (pre-batch) stock
@@ -889,7 +959,6 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
         wb = _open()
         ws_inv = wb["Invoices"]
         ws_items = wb["InvoiceItems"]
-        ws_prod = wb["Products"]
         ws_cl = wb["CreditLedger"] if "CreditLedger" in wb.sheetnames else None
 
         # Find and mark invoice row
@@ -929,13 +998,9 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                     "Deleting it would leave the customer overpaid. Record a refund or "
                     "adjust their balance first, then delete.")
 
-        # Build product row lookup
-        product_rows = {}
-        for row in ws_prod.iter_rows(min_row=2):
-            if row[0].value is not None:
-                product_rows[int(row[0].value)] = row
-
-        # Reverse stock for each item
+        # Reverse stock for each item — back to the specific batch it was
+        # sold from (or that product's legacy batch for pre-batch invoices).
+        touched_pids = set()
         for row in ws_items.iter_rows(min_row=2, values_only=True):
             if row[0] is None:
                 continue
@@ -944,10 +1009,10 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                 continue
             pid = int(item["product_id"] or 0)
             qty = int(item["quantity"] or 0)
-            if pid in product_rows:
-                prow = product_rows[pid]
-                current_stock = int(prow[4].value or 0)
-                prow[4].value = current_stock + qty
+            _restore_batch_for_sale(wb, pid, qty, item.get("batch_id"))
+            touched_pids.add(pid)
+        for pid in touched_pids:
+            _recompute_product_cache(wb, pid)
 
         # Reverse credit ledger entries for this invoice
         if ws_cl is not None:
@@ -1049,24 +1114,25 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None, delivery_c
         subtotal = 0.0
         discount_total = 0.0
         line_entries = []
+        touched_pids = set()
 
         for i, item in enumerate(items):
             pid = int(item["product_id"])
             qty = int(item["quantity"])
             discount_per_unit = float(item.get("discount_amount", 0))
+            requested_batch_id = item.get("batch_id")
 
             if pid not in product_rows:
                 raise ValueError(f"Product ID {pid} not found")
             prow = product_rows[pid]
-            available = int(prow[5].value)  # quantity column
-            if qty > available:
-                raise ValueError(
-                    f"Not enough stock for '{prow[1].value}': "
-                    f"requested {qty}, available {available}"
-                )
-
-            purchase_price = float(prow[2].value)   # purchase_price
             catalog_counter = float(prow[3].value)  # product counter_price
+
+            # Picks (or auto-picks) a batch and deducts qty from it; the
+            # batch's own cost is the COGS for this line, not the blended
+            # product-level cache.
+            batch_id_used, purchase_price = _deplete_batch_for_sale(
+                wb, pid, qty, requested_batch_id, prow[1].value)
+            touched_pids.add(pid)
 
             raw_unit = item.get("unit_price")
             if raw_unit is None or raw_unit == "":
@@ -1104,9 +1170,11 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None, delivery_c
                 qty,
                 line_discount,
                 round(line_total, 2),
+                batch_id_used,
             ])
-            # Decrement stock
-            prow[5].value = available - qty
+
+        for pid in touched_pids:
+            _recompute_product_cache(wb, pid)
 
         net_subtotal = round(subtotal - discount_total, 2)
         tax_amount = round(net_subtotal * tax_rate, 2)
@@ -1183,52 +1251,44 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                 old_items.append(_row_to_dict(ITEM_HEADERS, [c.value for c in row]))
                 old_item_indices.append(idx)
 
-        # Preserve original cost (COGS) per product so editing an invoice never
-        # rewrites historical cost with today's price.
-        old_cost_by_pid = {}
-        for old in old_items:
-            old_cost_by_pid.setdefault(int(old["product_id"]),
-                                       float(old.get("purchase_price") or 0))
-
         # Build product row lookup
         product_rows = {}
         for row in ws_products.iter_rows(min_row=2):
             if row[0].value is not None:
                 product_rows[int(row[0].value)] = row
 
-        # Return stock from old items
+        # Return stock from old items to the exact batch each was sold from
+        # (or that product's legacy batch for pre-batch invoices).
         for old in old_items:
-            pid = int(old["product_id"])
-            if pid in product_rows:
-                product_rows[pid][5].value = int(product_rows[pid][5].value) + int(old["quantity"])
+            _restore_batch_for_sale(wb, int(old["product_id"]), int(old["quantity"]), old.get("batch_id"))
 
         # Validate + compute new items
         subtotal = 0.0
         discount_total = 0.0
         new_entries = []
+        touched_pids = {int(old["product_id"]) for old in old_items}
         item_id_start = _next_id(ws_items)
 
         for i, item in enumerate(items):
             pid = int(item["product_id"])
             qty = int(item["quantity"])
             discount_per_unit = float(item.get("discount_amount", 0))
+            requested_batch_id = item.get("batch_id")
 
             if pid not in product_rows:
                 wb.close()
                 raise ValueError(f"Product ID {pid} not found")
             prow = product_rows[pid]
-            available = int(prow[5].value)
-            if qty > available:
-                wb.close()
-                raise ValueError(
-                    f"Not enough stock for '{prow[1].value}': "
-                    f"requested {qty}, available {available}"
-                )
-
-            # Keep the original cost for products already on this invoice;
-            # use current cost only for newly added lines.
-            purchase_price = old_cost_by_pid.get(pid, float(prow[2].value))
             catalog_counter = float(prow[3].value)
+
+            try:
+                batch_id_used, purchase_price = _deplete_batch_for_sale(
+                    wb, pid, qty, requested_batch_id, prow[1].value)
+            except ValueError:
+                wb.close()
+                raise
+            touched_pids.add(pid)
+
             raw_unit = item.get("unit_price")
             unit_price = float(raw_unit) if raw_unit not in (None, "") else catalog_counter
 
@@ -1259,8 +1319,11 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                 qty,
                 line_discount,
                 round(line_total, 2),
+                batch_id_used,
             ])
-            prow[5].value = available - qty
+
+        for pid in touched_pids:
+            _recompute_product_cache(wb, pid)
 
         net = round(subtotal - discount_total, 2)
         tax_amount = round(net * tax_rate, 2)
