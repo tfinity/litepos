@@ -1574,6 +1574,32 @@ def balance_sheet():
                            as_of=date.today())
 
 
+@app.route("/accounting/ledger/<int:account_id>")
+@login_required
+def account_ledger(account_id):
+    try:
+        excel_db.sync_journal_from_operations()
+    except Exception as e:
+        app.logger.warning("journal sync failed: %s", e)
+    start_str = request.args.get("start")
+    end_str = request.args.get("end")
+    try:
+        start_date = date.fromisoformat(start_str) if start_str else None
+    except ValueError:
+        start_date = None
+    try:
+        end_date = date.fromisoformat(end_str) if end_str else None
+    except ValueError:
+        end_date = None
+    try:
+        ledger = excel_db.get_account_ledger(account_id, start_date, end_date)
+    except ValueError as e:
+        flash(str(e), "danger")
+        return redirect(url_for("balance_sheet"))
+    return render_template("account_ledger.html", ledger=ledger,
+                           start_date=start_date, end_date=end_date)
+
+
 @app.route("/accounting/categories/add", methods=["POST"])
 @login_required
 def category_add():

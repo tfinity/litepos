@@ -37,7 +37,11 @@
                             <tbody>
                                 {% for a in bs.assets %}
                                 <tr>
-                                    <td>{{ a.name }}</td>
+                                    <td>
+                                        {% if a.account_id %}
+                                        <a href="{{ url_for('account_ledger', account_id=a.account_id) }}">{{ a.name }}</a>
+                                        {% else %}{{ a.name }}{% endif %}
+                                    </td>
                                     <td class="text-end">{{ "{:,.2f}".format(a.balance) }}</td>
                                 </tr>
                                 {% else %}
@@ -60,7 +64,11 @@
                             <tbody>
                                 {% for l in bs.liabilities %}
                                 <tr>
-                                    <td>{{ l.name }}</td>
+                                    <td>
+                                        {% if l.account_id %}
+                                        <a href="{{ url_for('account_ledger', account_id=l.account_id) }}">{{ l.name }}</a>
+                                        {% else %}{{ l.name }}{% endif %}
+                                    </td>
                                     <td class="text-end">{{ "{:,.2f}".format(l.balance) }}</td>
                                 </tr>
                                 {% else %}
@@ -80,7 +88,11 @@
                             <tbody>
                                 {% for e in bs.equity %}
                                 <tr>
-                                    <td>{{ e.name }}</td>
+                                    <td>
+                                        {% if e.account_id %}
+                                        <a href="{{ url_for('account_ledger', account_id=e.account_id) }}">{{ e.name }}</a>
+                                        {% else %}{{ e.name }}{% endif %}
+                                    </td>
                                     <td class="text-end">{{ "{:,.2f}".format(e.balance) }}</td>
                                 </tr>
                                 {% endfor %}

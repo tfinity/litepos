@@ -2857,6 +2857,77 @@ def get_trial_balance():
     return rows, {"debit": round(total_debit, 2), "credit": round(total_credit, 2)}
 
 
+def get_account_ledger(account_id, start_date=None, end_date=None):
+    """Every journal line posted to one account, oldest first, with a running
+    balance in the account's normal direction (debit-normal for assets/
+    expenses, credit-normal otherwise). This is the full audit trail behind
+    any Balance Sheet or Income Statement figure for that account.
+
+    If start_date is given, activity before it is folded into an "opening
+    balance" instead of dropped, so the running balance still ties out to
+    the true all-time total (matches the Balance Sheet, which is not
+    date-filtered)."""
+    aid = int(account_id)
+    acct = get_account(aid)
+    if not acct:
+        raise ValueError("Account not found.")
+    is_debit_normal = acct["type"] in _DEBIT_NORMAL_TYPES
+
+    entries = {}
+    with _lock:
+        wb = _open()
+        if "JournalEntries" in wb.sheetnames:
+            for row in wb["JournalEntries"].iter_rows(min_row=2, values_only=True):
+                if row[0] is None:
+                    continue
+                d = _row_to_dict(JOURNAL_HEADERS, row)
+                entries[int(d["entry_id"])] = d
+        wb.close()
+
+    rows = []
+    for ln in get_journal_lines():
+        if int(ln["account_id"]) != aid:
+            continue
+        entry = entries.get(int(ln["entry_id"]))
+        if not entry:
+            continue
+        d = entry.get("date")
+        if isinstance(d, datetime):
+            d = d.date()
+        rows.append({
+            "entry_id": int(ln["entry_id"]),
+            "date": d,
+            "description": entry.get("description"),
+            "source_type": entry.get("source_type"),
+            "source_id": entry.get("source_id"),
+            "debit": round(float(ln["debit"] or 0), 2),
+            "credit": round(float(ln["credit"] or 0), 2),
+        })
+    rows.sort(key=lambda r: (r["date"] or date.min, r["entry_id"]))
+
+    opening_balance = 0.0
+    running = 0.0
+    out_rows = []
+    for r in rows:
+        delta = (r["debit"] - r["credit"]) if is_debit_normal else (r["credit"] - r["debit"])
+        if start_date is not None and r["date"] is not None and r["date"] < start_date:
+            opening_balance = round(opening_balance + delta, 2)
+            continue
+        if end_date is not None and r["date"] is not None and r["date"] > end_date:
+            continue
+        running = round(running + delta, 2)
+        row = dict(r)
+        row["running_balance"] = round(opening_balance + running, 2)
+        out_rows.append(row)
+
+    return {
+        "account": acct,
+        "opening_balance": round(opening_balance, 2),
+        "rows": out_rows,
+        "closing_balance": out_rows[-1]["running_balance"] if out_rows else round(opening_balance, 2),
+    }
+
+
 # ── Expenses (built on the journal) ──────────────────────────────────
 
 def record_expense(expense_account_id, amount, paid_from_account_id,
@@ -3183,7 +3254,11 @@ def get_balance_sheet():
         atype = r["account"]["type"]
         bal = r["balance"]
         if atype in sections:
-            sections[atype].append({"name": r["account"]["name"], "balance": bal})
+            sections[atype].append({
+                "name": r["account"]["name"],
+                "account_id": r["account"]["account_id"],
+                "balance": bal,
+            })
             total[atype] += bal
         elif atype == "income":
             income += bal
