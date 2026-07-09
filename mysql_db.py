@@ -2475,11 +2475,50 @@ def _realized_credit_invoice_ids():
     return realized, breakdown
 
 
+def _has_stale_ar_entries():
+    """True if any journal line ever posted to Accounts Receivable (1100).
+    AR is no longer used by this posting model (see sync_journal_from_operations);
+    its presence means the derived journal was built by an earlier model and
+    needs a one-time rebuild."""
+    accts = {a["account_id"]: a for a in get_all_accounts()}
+    ar_ids = {aid for aid, a in accts.items() if str(a["code"]) == "1100"}
+    if not ar_ids:
+        return False
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM journal_lines WHERE tenant_id = %s AND account_id IN %s LIMIT 1",
+                (tid, tuple(ar_ids)))
+            return cur.fetchone() is not None
+
+
 def sync_journal_from_operations():
+    """Generate journal entries for sales, purchases, supplier payments and
+    customer payments not yet posted. A sale's Inventory/COGS moves immediately
+    (physical stock left regardless of payment status), but Sales revenue for
+    a credit sale is only recognised as the customer actually pays -- partial
+    or full, whenever it's recorded. There is no Accounts Receivable account:
+    outstanding customer balances live entirely in the Credit Ledger. Idempotent.
+    Returns count posted."""
     seed_chart_of_accounts()  # auto-heal a missing/partial chart of accounts
     acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
-    CASH, BANK, AR, INV, AP = acc["1000"], acc["1010"], acc["1100"], acc["1200"], acc["2000"]
+    CASH, BANK, INV, AP = acc["1000"], acc["1010"], acc["1200"], acc["2000"]
     TAX, SALES, COGS = acc["2100"], acc["4000"], acc["5000"]
+
+    if _has_stale_ar_entries():
+        # An earlier posting model used Accounts Receivable; wipe the derived
+        # journal so it can be rebuilt below under the current model. Opening
+        # balances and manual/expense entries are untouched. "customer_charge"
+        # is a retired source_type from an interim model -- swept up here too
+        # so no orphaned AR lines survive the rebuild.
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """DELETE FROM journal_entries WHERE tenant_id = %s AND source_type IN
+                       ('sale','purchase','supplier_payment','customer_payment','customer_charge')""",
+                    (_tid(),))
+
     existing = _existing_journal_sources()
     books_start = get_books_start()
 
@@ -2489,44 +2528,39 @@ def sync_journal_from_operations():
         d = val.date() if isinstance(val, datetime) else val
         return d is None or d >= books_start
 
-    # Cash-basis for credit sales: a credit sale only reaches the books once the
-    # customer's payments cover it (oldest invoice first). Cash sales post at once.
-    realized, realized_breakdown = _realized_credit_invoice_ids()
-
     pending = []
+    # Cash/bank sales post in full immediately: Dr Cash/Bank, Cr Sales (+Tax),
+    # Dr COGS/Cr Inventory. A credit sale only moves the stock side at sale
+    # time (Dr COGS/Cr Inventory -- the goods physically left regardless of
+    # payment); its revenue is recognised later, per payment, below.
     for inv in get_all_invoices():
         sid = int(inv["invoice_id"])
         if ("sale", str(sid)) in existing or not _after_start(inv.get("created_at")):
             continue
         is_credit = str(inv.get("payment_method") or "").strip().lower() == "credit"
-        if is_credit and sid not in realized:
-            continue  # unpaid credit sale -> stays off the balance sheet
         items = get_invoice_items(sid)
         cogs = round(sum(float(it["purchase_price"] or 0) * int(it["quantity"] or 0) for it in items), 2)
-        net = round(float(inv.get("subtotal") or 0) - float(inv.get("discount_total") or 0), 2)
-        tax = round(float(inv.get("tax_amount") or 0), 2)
-        delivery = round(float(inv.get("delivery_charges") or 0), 2)
-        total = round(float(inv.get("total") or 0), 2)
         lines = []
         if is_credit:
-            # Realized credit sale: split the receipt across whichever
-            # account(s) the customer's covering payments actually went to.
-            alloc = realized_breakdown.get(sid, {"cash": total, "bank": 0.0})
-            if alloc["cash"] > 0:
-                lines.append((CASH, alloc["cash"], 0.0))
-            if alloc["bank"] > 0:
-                lines.append((BANK, alloc["bank"], 0.0))
+            if cogs > 0:
+                lines.append((COGS, cogs, 0.0))
+                lines.append((INV, 0.0, cogs))
         else:
+            net = round(float(inv.get("subtotal") or 0) - float(inv.get("discount_total") or 0), 2)
+            tax = round(float(inv.get("tax_amount") or 0), 2)
+            delivery = round(float(inv.get("delivery_charges") or 0), 2)
+            total = round(float(inv.get("total") or 0), 2)
             pm = str(inv.get("payment_method") or "cash").strip().lower()
             recv_acct = BANK if pm == "bank" else CASH
             lines.append((recv_acct, total, 0.0))
-        lines.append((SALES, 0.0, net + delivery))
-        if tax > 0:
-            lines.append((TAX, 0.0, tax))
-        if cogs > 0:
-            lines.append((COGS, cogs, 0.0))
-            lines.append((INV, 0.0, cogs))
-        pending.append((inv.get("created_at"), f"Sale INV-{sid}", "sale", sid, lines))
+            lines.append((SALES, 0.0, net + delivery))
+            if tax > 0:
+                lines.append((TAX, 0.0, tax))
+            if cogs > 0:
+                lines.append((COGS, cogs, 0.0))
+                lines.append((INV, 0.0, cogs))
+        if lines:
+            pending.append((inv.get("created_at"), f"Sale INV-{sid}", "sale", sid, lines))
 
     _pay_acct = {"credit": AP, "cash": CASH, "bank": BANK}
     for p in get_all_purchase_invoices():
@@ -2557,9 +2591,22 @@ def sync_journal_from_operations():
         pending.append((e.get("created_at"), "Supplier payment", "supplier_payment", eid,
                         [(AP, amt, 0.0), (cash_acct, 0.0, amt)]))
 
-    # Customer credit repayments are NOT posted separately: the cash for a credit
-    # sale enters the books when that sale is recognised (above), keeping the
-    # balance sheet on a cash basis for credit.
+    # Customer payments -> Dr Cash/Bank, Cr Sales. Revenue for a credit sale
+    # (or a manual charge) is recognised right here, exactly as it's actually
+    # collected -- partial or full -- instead of at sale time.
+    for e in get_credit_ledger():
+        if e.get("type") != "credit":
+            continue
+        eid = int(e["entry_id"])
+        if ("customer_payment", str(eid)) in existing or not _after_start(e.get("created_at")):
+            continue
+        amt = round(float(e.get("amount") or 0), 2)
+        if amt <= 0:
+            continue
+        pm = str(e.get("payment_method") or "cash").strip().lower()
+        recv_acct = BANK if pm == "bank" else CASH
+        pending.append((e.get("created_at"), "Customer payment", "customer_payment", eid,
+                        [(recv_acct, amt, 0.0), (SALES, 0.0, amt)]))
 
     if not pending:
         return 0
