@@ -2296,6 +2296,79 @@ def delete_expense(entry_id):
         conn.commit()
 
 
+def record_capital_injection(account_id, amount, description="", created_by="system",
+                             entry_date=None):
+    """Record extra owner funds added to Cash/Bank, outside the opening balance.
+    Posts: Dr Cash/Bank, Cr Owner Capital."""
+    amount = round(float(amount), 2)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    dest = get_account(int(account_id))
+    if not dest or dest["type"] != "asset" or str(dest["code"]) not in ("1000", "1010"):
+        raise ValueError("Select a valid account to add funds to (Cash/Bank).")
+    accts = {str(a["code"]): a for a in get_all_accounts()}
+    cap_acct = accts["3000"]
+    desc = (description or "").strip() or f"Funds added to {dest['name']}"
+    return post_journal(
+        desc,
+        [{"account_id": dest["account_id"], "debit": amount},
+         {"account_id": cap_acct["account_id"], "credit": amount}],
+        source_type="capital_injection", created_by=created_by, entry_date=entry_date)
+
+
+def get_capital_injections(start_date=None, end_date=None):
+    """List capital-injection journal entries with amount and destination account."""
+    where = ["je.source_type = 'capital_injection'", "je.tenant_id = %s"]
+    params = [_tid()]
+    if start_date:
+        where.append("DATE(je.date) >= %s")
+        params.append(start_date)
+    if end_date:
+        where.append("DATE(je.date) <= %s")
+        params.append(end_date)
+    clause = " AND ".join(where)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT je.entry_id, je.date, je.description, je.created_by,
+                       da.account_id AS dest_id, da.code AS dest_code, da.name AS dest_name, da.type AS dest_type,
+                       dl.debit AS amount
+                FROM journal_entries je
+                JOIN journal_lines dl ON dl.entry_id = je.entry_id AND dl.debit > 0
+                JOIN accounts da ON da.account_id = dl.account_id
+                WHERE {clause}
+                ORDER BY je.entry_id DESC
+            """, params)
+            raw = cur.fetchall()
+    entries = []
+    for r in raw:
+        entries.append({
+            "entry_id": r["entry_id"],
+            "date": r["date"],
+            "description": r["description"],
+            "account": {"account_id": r["dest_id"], "code": r["dest_code"],
+                        "name": r["dest_name"], "type": r["dest_type"]} if r["dest_id"] else None,
+            "amount": round(float(r["amount"]), 2),
+            "created_by": r["created_by"],
+        })
+    return entries
+
+
+def delete_capital_injection(entry_id):
+    eid = int(entry_id)
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT entry_id FROM journal_entries WHERE entry_id=%s AND tenant_id=%s AND source_type='capital_injection'",
+                (eid, tid)
+            )
+            if not cur.fetchone():
+                raise ValueError("Entry not found.")
+            cur.execute("DELETE FROM journal_entries WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+        conn.commit()
+
+
 def update_account_name(account_id, name):
     aid = int(account_id)
     name = str(name).strip()
@@ -2354,6 +2427,40 @@ def get_opening_balances():
         amount = float(r["debit"]) if r["type"] in _DEBIT_NORMAL_TYPES else float(r["credit"])
         out[str(r["code"])] = round(amount, 2)
     return out
+
+
+def count_operational_before(start_date):
+    """Count sales/purchases/supplier-payments/customer-payments dated before
+    start_date -- i.e. exactly the transactions that would stop being posted to
+    the journal if start_date became the new books-start date (see _after_start
+    in sync_journal_from_operations). Used to warn before a destructive change."""
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+
+    def _before(val):
+        if val is None:
+            return False
+        d = val.date() if isinstance(val, datetime) else val
+        return d < start_date
+
+    count = 0
+    for inv in get_all_invoices():
+        if _before(inv.get("created_at")):
+            count += 1
+    for p in get_all_purchase_invoices():
+        if _before(p.get("created_at")):
+            count += 1
+    for e in get_supplier_ledger_entries():
+        if e.get("type") != "credit" or e.get("purchase_id") not in (None, ""):
+            continue
+        if _before(e.get("created_at")):
+            count += 1
+    for e in get_credit_ledger():
+        if e.get("type") != "credit":
+            continue
+        if _before(e.get("created_at")):
+            count += 1
+    return count
 
 
 def set_opening_balances(start_date, balances, created_by="system"):

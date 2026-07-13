@@ -3039,6 +3039,109 @@ def delete_expense(entry_id):
         wb.close()
 
 
+def record_capital_injection(account_id, amount, description="", created_by="system",
+                             entry_date=None):
+    """Record extra owner funds added to Cash/Bank, outside the opening balance.
+    Posts: Dr Cash/Bank, Cr Owner Capital."""
+    amount = round(float(amount), 2)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    dest = get_account(int(account_id))
+    if not dest or dest["type"] != "asset" or str(dest["code"]) not in ("1000", "1010"):
+        raise ValueError("Select a valid account to add funds to (Cash/Bank).")
+    accts = {str(a["code"]): a for a in get_all_accounts()}
+    cap_acct = accts["3000"]
+    desc = (description or "").strip() or f"Funds added to {dest['name']}"
+    return post_journal(
+        desc,
+        [{"account_id": dest["account_id"], "debit": amount},
+         {"account_id": cap_acct["account_id"], "credit": amount}],
+        source_type="capital_injection", created_by=created_by, entry_date=entry_date)
+
+
+def get_capital_injections(start_date=None, end_date=None):
+    """List capital-injection journal entries with amount and destination account."""
+    accounts = {a["account_id"]: a for a in get_all_accounts()}
+    entries = []
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            return []
+        je = {}
+        for row in wb["JournalEntries"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_HEADERS, row)
+            if d.get("source_type") != "capital_injection":
+                continue
+            je[int(d["entry_id"])] = d
+        lines_by_entry = {}
+        for row in wb["JournalLines"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_LINE_HEADERS, row)
+            eid = int(d["entry_id"])
+            if eid in je:
+                lines_by_entry.setdefault(eid, []).append(d)
+        wb.close()
+
+    for eid, entry in je.items():
+        dest_acct = None
+        amount = 0.0
+        for ln in lines_by_entry.get(eid, []):
+            aid = int(ln["account_id"])
+            debit = float(ln["debit"] or 0)
+            if debit > 0:
+                dest_acct = accounts.get(aid)
+                amount = debit
+        edate = entry.get("date")
+        edd = edate.date() if isinstance(edate, datetime) else edate
+        if start_date and edd and edd < start_date:
+            continue
+        if end_date and edd and edd > end_date:
+            continue
+        entries.append({
+            "entry_id": eid,
+            "date": edate,
+            "description": entry.get("description"),
+            "account": dest_acct,
+            "amount": round(amount, 2),
+            "created_by": entry.get("created_by"),
+        })
+    entries.sort(key=lambda x: x["entry_id"], reverse=True)
+    return entries
+
+
+def delete_capital_injection(entry_id):
+    eid = int(entry_id)
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            raise ValueError("Entry not found.")
+        ws_je = wb["JournalEntries"]
+        row_idx = None
+        for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+            if row[0].value is None:
+                continue
+            if int(row[0].value) == eid and row[3].value == "capital_injection":
+                row_idx = idx
+                break
+        if row_idx is None:
+            wb.close()
+            raise ValueError("Entry not found.")
+        if "JournalLines" in wb.sheetnames:
+            ws_jl = wb["JournalLines"]
+            del_rows = [i for i, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                        if row[0].value is not None and int(row[1].value) == eid]
+            for idx in sorted(del_rows, reverse=True):
+                ws_jl.delete_rows(idx, 1)
+        ws_je.delete_rows(row_idx, 1)
+        _save(wb)
+        wb.close()
+
+
 # ── Journal sync: post accounting entries from operational data ───────
 
 def _existing_journal_sources():
@@ -3392,6 +3495,40 @@ def get_opening_balances():
         amount = dr if acct["type"] in _DEBIT_NORMAL_TYPES else cr
         out[str(acct["code"])] = round(amount, 2)
     return out
+
+
+def count_operational_before(start_date):
+    """Count sales/purchases/supplier-payments/customer-payments dated before
+    start_date -- i.e. exactly the transactions that would stop being posted to
+    the journal if start_date became the new books-start date (see _after_start
+    in sync_journal_from_operations). Used to warn before a destructive change."""
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+
+    def _before(val):
+        if val is None:
+            return False
+        d = val.date() if isinstance(val, datetime) else val
+        return d < start_date
+
+    count = 0
+    for inv in get_all_invoices():
+        if _before(inv.get("created_at")):
+            count += 1
+    for p in get_all_purchase_invoices():
+        if _before(p.get("created_at")):
+            count += 1
+    for e in get_supplier_ledger_entries():
+        if e.get("type") != "credit" or e.get("purchase_id") not in (None, ""):
+            continue
+        if _before(e.get("created_at")):
+            count += 1
+    for e in get_credit_ledger():
+        if e.get("type") != "credit":
+            continue
+        if _before(e.get("created_at")):
+            count += 1
+    return count
 
 
 _AUTO_SYNCED_SOURCES = ("sale", "purchase", "supplier_payment", "customer_payment")

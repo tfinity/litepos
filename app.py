@@ -1365,6 +1365,55 @@ def expense_delete(entry_id):
     return redirect(url_for("expenses"))
 
 
+@app.route("/accounting/add-funds", methods=["GET", "POST"])
+@login_required
+def add_funds():
+    # Destination = Cash / Bank
+    pay_accounts = [a for a in excel_db.get_accounts_by_type("asset")
+                    if str(a["code"]) in ("1000", "1010")]
+
+    if request.method == "POST":
+        try:
+            excel_db.record_capital_injection(
+                int(request.form["account_id"]),
+                request.form.get("amount", ""),
+                request.form.get("description", ""),
+                created_by=current_user.username,
+            )
+            flash("Funds added.", "success")
+        except (ValueError, KeyError) as e:
+            flash(str(e) or "Invalid amount.", "danger")
+        return redirect(url_for("add_funds"))
+
+    today = date.today()
+    start_str = request.args.get("start", today.replace(day=1).isoformat())
+    end_str = request.args.get("end", today.isoformat())
+    try:
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = today.replace(day=1)
+        end_date = today
+
+    items = excel_db.get_capital_injections(start_date, end_date)
+    total = round(sum(e["amount"] for e in items), 2)
+    return render_template("add_funds.html",
+                           pay_accounts=pay_accounts,
+                           items=items, total=total,
+                           start_date=start_date, end_date=end_date)
+
+
+@app.route("/accounting/add-funds/<int:entry_id>/delete", methods=["POST"])
+@login_required
+def add_funds_delete(entry_id):
+    try:
+        excel_db.delete_capital_injection(entry_id)
+        flash("Entry deleted and balance restored.", "success")
+    except Exception as e:
+        flash(f"Could not delete: {e}", "danger")
+    return redirect(url_for("add_funds"))
+
+
 def _as_date(val):
     """Coerce a stored created_at (datetime/date/str) to a date, or None."""
     from datetime import datetime as _dt
@@ -1537,6 +1586,17 @@ def opening_balances():
             "1100": amt("receivable"),
             "2000": amt("payable"),
         }
+
+        confirmed = request.form.get("confirm") == "1"
+        if not confirmed:
+            dropped = excel_db.count_operational_before(start_date)
+            if dropped > 0:
+                return render_template(
+                    "opening_balances.html",
+                    existing=excel_db.get_opening_balances(),
+                    books_start=excel_db.get_books_start(),
+                    warn={"count": dropped, "start_date": start_date, "balances": balances})
+
         try:
             excel_db.set_opening_balances(start_date, balances,
                                           created_by=current_user.username)

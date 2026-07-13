@@ -16,7 +16,40 @@
         {% if books_start %}
         <div class="alert alert-secondary">
             Books currently start on <strong>{{ books_start.isoformat() }}</strong>.
-            Saving again will replace the opening balances.
+            Saving again will replace the opening balances. To add extra cash/bank
+            money later without touching this, use
+            <a href="{{ url_for('add_funds') }}">Add Funds</a> instead.
+        </div>
+        {% endif %}
+
+        {% if warn %}
+        <div class="alert alert-danger">
+            <h6 class="alert-heading"><i class="bi bi-exclamation-triangle"></i> This will remove
+                {{ warn.count }} existing transaction{{ 's' if warn.count != 1 }} from the books</h6>
+            <p class="mb-2">
+                Changing the books-start date to <strong>{{ warn.start_date.isoformat() }}</strong>
+                means every sale, purchase, supplier payment and customer payment dated
+                before that day stops posting to the ledger and Balance Sheet &mdash;
+                they'll be treated as already folded into the opening balance figures
+                instead.
+            </p>
+            <p class="mb-3">
+                Nothing is deleted &mdash; your invoices/purchases/payments records are
+                untouched, and setting the date back will bring them back. If you only
+                meant to add money, not move the start date, cancel and use
+                <a href="{{ url_for('add_funds') }}">Add Funds</a> instead.
+            </p>
+            <form method="POST" class="d-flex gap-2">
+                <input type="hidden" name="start_date" value="{{ warn.start_date.isoformat() }}">
+                <input type="hidden" name="cash" value="{{ warn.balances.get('1000', 0) }}">
+                <input type="hidden" name="bank" value="{{ warn.balances.get('1010', 0) }}">
+                <input type="hidden" name="inventory" value="{{ warn.balances.get('1200', 0) }}">
+                <input type="hidden" name="receivable" value="{{ warn.balances.get('1100', 0) }}">
+                <input type="hidden" name="payable" value="{{ warn.balances.get('2000', 0) }}">
+                <input type="hidden" name="confirm" value="1">
+                <button type="submit" class="btn btn-danger btn-sm">Yes, change the date anyway</button>
+                <a href="{{ url_for('opening_balances') }}" class="btn btn-outline-secondary btn-sm">Cancel</a>
+            </form>
         </div>
         {% endif %}
 
@@ -26,7 +59,7 @@
                     <div class="mb-3">
                         <label class="form-label">Books start date <span class="text-danger">*</span></label>
                         <input type="date" name="start_date" class="form-control" required
-                               value="{{ books_start.isoformat() if books_start else '' }}">
+                               value="{{ (warn.start_date.isoformat() if warn else books_start.isoformat()) if (warn or books_start) else '' }}">
                         <div class="form-text">Only transactions on/after this date post to the ledger.</div>
                     </div>
 
@@ -35,23 +68,23 @@
                         <div class="col-md-6 mb-2">
                             <label class="form-label">Cash in hand ({{ currency }})</label>
                             <input type="number" name="cash" class="form-control" step="0.01" min="0"
-                                   value="{{ existing.get('1000', '') }}">
+                                   value="{{ warn.balances.get('1000', '') if warn else existing.get('1000', '') }}">
                         </div>
                         <div class="col-md-6 mb-2">
                             <label class="form-label">Bank balance ({{ currency }})</label>
                             <input type="number" name="bank" class="form-control" step="0.01" min="0"
-                                   value="{{ existing.get('1010', '') }}">
+                                   value="{{ warn.balances.get('1010', '') if warn else existing.get('1010', '') }}">
                         </div>
                         <div class="col-md-6 mb-2">
                             <label class="form-label">Stock value ({{ currency }})</label>
                             <input type="number" name="inventory" class="form-control" step="0.01" min="0"
-                                   value="{{ existing.get('1200', '') }}">
+                                   value="{{ warn.balances.get('1200', '') if warn else existing.get('1200', '') }}">
                             <div class="form-text">Total purchase cost of stock on hand.</div>
                         </div>
                         <div class="col-md-6 mb-2">
                             <label class="form-label">Owed by customers ({{ currency }})</label>
                             <input type="number" name="receivable" class="form-control" step="0.01" min="0"
-                                   value="{{ existing.get('1100', '') }}">
+                                   value="{{ warn.balances.get('1100', '') if warn else existing.get('1100', '') }}">
                         </div>
                     </div>
 
@@ -60,7 +93,7 @@
                         <div class="col-md-6 mb-2">
                             <label class="form-label">Owed to suppliers ({{ currency }})</label>
                             <input type="number" name="payable" class="form-control" step="0.01" min="0"
-                                   value="{{ existing.get('2000', '') }}">
+                                   value="{{ warn.balances.get('2000', '') if warn else existing.get('2000', '') }}">
                         </div>
                     </div>
 
