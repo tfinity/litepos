@@ -465,6 +465,22 @@ def product_delete(product_id):
     return redirect(url_for("products"))
 
 
+@app.route("/products/<int:product_id>")
+@login_required
+def product_detail(product_id):
+    product = excel_db.get_product(product_id)
+    if not product:
+        flash("Product not found.", "danger")
+        return redirect(url_for("products"))
+    smap = excel_db.supplier_lookup()
+    batches = excel_db.get_product_batches(product_id)
+    for b in batches:
+        supplier = smap.get(int(b["supplier_id"])) if b.get("supplier_id") else None
+        b["supplier_name"] = supplier["name"] if supplier else None
+    batches.sort(key=lambda b: b["received_at"].isoformat() if b.get("received_at") else "", reverse=True)
+    return render_template("product_detail.html", product=product, batches=batches)
+
+
 # ── Reports ──────────────────────────────────────────────────────────
 
 @app.route("/stock-report")
