@@ -98,14 +98,24 @@
                     </div>
                 </div>
                 <div class="row g-2 align-items-end mt-1">
-                    <div class="col-md-3 offset-md-9">
+                    <div class="col-md-2">
+                        <label class="form-label small text-muted mb-1">Counter price <span class="text-muted">(optional)</span></label>
+                        <input type="number" id="addCounter" class="form-control" step="0.01" min="0" placeholder="unchanged">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small text-muted mb-1">MRP <span class="text-muted">(optional)</span></label>
+                        <input type="number" id="addRetail" class="form-control" step="0.01" min="0" placeholder="unchanged">
+                    </div>
+                    <div class="col-md-3 offset-md-5">
                         <label class="form-label small text-muted mb-1">Expiry date <span class="text-muted">(optional)</span></label>
                         <input type="date" id="addExpiry" class="form-control">
                     </div>
                 </div>
                 <div class="form-text">
-                    <i class="bi bi-info-circle"></i> Reusing the same lot # for a product adds to that batch.
-                    A different price under the same lot # will be rejected — use a new lot # for a different rate.
+                    <i class="bi bi-info-circle"></i> Reusing the same lot # at the same price tops up that batch.
+                    A different price under the same lot # is kept as a separate batch entry under the same lot,
+                    not rejected. Counter price / MRP are pre-filled with the product's current selling price —
+                    change them here to update it going forward.
                 </div>
                 <div id="searchResults" class="list-group mt-2" style="display:none; position:absolute; z-index:1000; max-height:260px; overflow-y:auto; width:50%"></div>
             </div>
@@ -265,6 +275,8 @@ function selectProduct(id) {
     selectedProduct = products.find(p => p.product_id === id);
     searchInput.value = selectedProduct.name;
     addPriceInput.value = parseFloat(selectedProduct.purchase_price || 0).toFixed(2);
+    document.getElementById('addCounter').value = parseFloat(selectedProduct.counter_price || 0).toFixed(2);
+    document.getElementById('addRetail').value = parseFloat(selectedProduct.retail_price || 0).toFixed(2);
     resultsDiv.style.display = 'none';
 }
 
@@ -312,6 +324,10 @@ function addToCart() {
     const price = parseFloat(addPriceInput.value) || 0;
     const lot = document.getElementById('addLot').value.trim();
     const expiry = document.getElementById('addExpiry').value || '';
+    const counterVal = document.getElementById('addCounter').value;
+    const retailVal = document.getElementById('addRetail').value;
+    const counter = counterVal !== '' ? parseFloat(counterVal) : null;
+    const retail = retailVal !== '' ? parseFloat(retailVal) : null;
     if (price <= 0) { alert('Enter a purchase price.'); return; }
     // Different batches of the same product are separate cart lines — only
     // merge when product AND lot # match (blank lot # never merges, since
@@ -320,13 +336,17 @@ function addToCart() {
     if (existing) {
         existing.qty += qty;
         existing.price = price;
+        existing.counter = counter;
+        existing.retail = retail;
         if (expiry) existing.expiry = expiry;
     } else {
-        cart.push({ product_id: selectedProduct.product_id, name: selectedProduct.name, qty, price, lot, expiry });
+        cart.push({ product_id: selectedProduct.product_id, name: selectedProduct.name, qty, price, lot, expiry, counter, retail });
     }
     renderCart();
     searchInput.value = '';
     addPriceInput.value = '';
+    document.getElementById('addCounter').value = '';
+    document.getElementById('addRetail').value = '';
     document.getElementById('addQty').value = 1;
     document.getElementById('addLot').value = '';
     document.getElementById('addExpiry').value = '';
@@ -437,6 +457,7 @@ async function submitPurchase() {
         items: direct ? [] : cart.map(c => ({
             product_id: c.product_id, quantity: c.qty, unit_cost: c.price,
             batch_number: c.lot || null, expiry_date: c.expiry || null,
+            counter_price: c.counter, retail_price: c.retail,
         }))
     };
     try {

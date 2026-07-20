@@ -1950,24 +1950,22 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
 
             batch_id_used = None
             if batch_number:
-                # Reusing a lot number adds to that batch; reusing it at a
-                # different cost is treated as a mistake, not a silent average.
+                # Reusing a lot number at the same cost tops up that batch.
+                # Reusing it at a different cost is a legitimate second
+                # arrival of the same lot (supplier re-priced mid-batch) --
+                # it becomes its own batch entry sharing the same lot label,
+                # so both cost tiers stay visible instead of one silently
+                # overwriting or blocking the other.
                 match_row = None
                 for brow in ws_b.iter_rows(min_row=2):
                     if brow[0].value is None or brow[1].value is None:
                         continue
                     if int(brow[1].value) == pid and \
-                       str(brow[2].value or "").strip().lower() == batch_number.lower():
+                       str(brow[2].value or "").strip().lower() == batch_number.lower() and \
+                       round(float(brow[5].value or 0), 2) == round(unit_cost, 2):
                         match_row = brow
                         break
                 if match_row is not None:
-                    existing_cost = float(match_row[5].value or 0)
-                    if round(existing_cost, 2) != round(unit_cost, 2):
-                        wb.close()
-                        raise ValueError(
-                            f"Lot '{batch_number}' for {prow[1].value} already exists at cost "
-                            f"{existing_cost:.2f} — use a different lot number if this is a different rate."
-                        )
                     match_row[6].value = int(match_row[6].value or 0) + qty
                     match_row[7].value = int(match_row[7].value or 0) + qty
                     batch_id_used = int(match_row[0].value)
@@ -1986,6 +1984,13 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
             ])
             prow[10].value = sid
             touched_pids.add(pid)
+
+            counter_price = item.get("counter_price")
+            retail_price = item.get("retail_price")
+            if counter_price not in (None, ""):
+                prow[3].value = round(float(counter_price), 2)
+            if retail_price not in (None, ""):
+                prow[4].value = round(float(retail_price), 2)
 
         for pid in touched_pids:
             _recompute_product_cache(wb, pid)

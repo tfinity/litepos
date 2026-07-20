@@ -1553,7 +1553,7 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
                 raise ValueError("Supplier not found.")
 
             total_amount = 0.0
-            prepared = []  # (pid, pname, qty, unit_cost, line_total, batch_number, expiry)
+            prepared = []  # (pid, pname, qty, unit_cost, line_total, batch_number, expiry, counter_price, retail_price)
 
             for item in items:
                 pid = int(item["product_id"])
@@ -1567,7 +1567,10 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
                 total_amount += line_total
                 batch_number = str(item.get("batch_number") or "").strip()
                 expiry = item.get("expiry_date") or None
-                prepared.append((pid, prod["name"], qty, unit_cost, line_total, batch_number, expiry))
+                counter_price = item.get("counter_price")
+                retail_price = item.get("retail_price")
+                prepared.append((pid, prod["name"], qty, unit_cost, line_total, batch_number, expiry,
+                                  counter_price, retail_price))
 
             if not items and direct_amount is not None:
                 total_amount = float(direct_amount)
@@ -1582,24 +1585,24 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
 
             line_entries = []
             touched_pids = set()
-            for pid, pname, qty, unit_cost, line_total, batch_number, expiry in prepared:
+            for pid, pname, qty, unit_cost, line_total, batch_number, expiry, counter_price, retail_price in prepared:
                 batch_id_used = None
                 if batch_number:
-                    # Reusing a lot number adds to that batch; reusing it at a
-                    # different cost is treated as a mistake, not a silent average.
+                    # Reusing a lot number at the same cost tops up that batch.
+                    # Reusing it at a different cost is a legitimate second
+                    # arrival of the same lot (supplier re-priced mid-batch) --
+                    # it becomes its own batch entry sharing the same lot
+                    # label, so both cost tiers stay visible instead of one
+                    # silently overwriting or blocking the other.
                     cur.execute("""
                         SELECT batch_id, unit_cost, qty_received, qty_remaining FROM product_batches
                         WHERE product_id=%s AND tenant_id=%s AND LOWER(batch_number)=LOWER(%s)
                         FOR UPDATE
                     """, (pid, tid, batch_number))
-                    match = cur.fetchone()
+                    candidates = cur.fetchall()
+                    match = next((c for c in candidates
+                                  if round(float(c["unit_cost"] or 0), 2) == round(unit_cost, 2)), None)
                     if match:
-                        if round(float(match["unit_cost"] or 0), 2) != round(unit_cost, 2):
-                            raise ValueError(
-                                f"Lot '{batch_number}' for {pname} already exists at cost "
-                                f"{float(match['unit_cost'] or 0):.2f} — use a different lot number "
-                                f"if this is a different rate."
-                            )
                         cur.execute("""
                             UPDATE product_batches SET qty_received = qty_received + %s,
                                    qty_remaining = qty_remaining + %s
@@ -1627,6 +1630,12 @@ def create_purchase_invoice(supplier_id, items, notes="", payment_method="credit
                 line_entries.append((pid, pname, qty, unit_cost, line_total, batch_id_used))
                 cur.execute("UPDATE products SET last_supplier_id=%s WHERE product_id=%s AND tenant_id=%s",
                             (sid, pid, tid))
+                if counter_price not in (None, ""):
+                    cur.execute("UPDATE products SET counter_price=%s WHERE product_id=%s AND tenant_id=%s",
+                                (round(float(counter_price), 2), pid, tid))
+                if retail_price not in (None, ""):
+                    cur.execute("UPDATE products SET retail_price=%s WHERE product_id=%s AND tenant_id=%s",
+                                (round(float(retail_price), 2), pid, tid))
                 touched_pids.add(pid)
 
             for pid in touched_pids:
