@@ -3142,6 +3142,119 @@ def delete_capital_injection(entry_id):
         wb.close()
 
 
+def record_capital_withdrawal(account_id, amount, description="", created_by="system",
+                              entry_date=None):
+    """Record funds pulled out of Cash/Bank (owner draw, transfer out, etc),
+    outside the opening balance. Posts: Dr Owner Capital, Cr Cash/Bank."""
+    amount = round(float(amount), 2)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    src = get_account(int(account_id))
+    if not src or src["type"] != "asset" or str(src["code"]) not in ("1000", "1010"):
+        raise ValueError("Select a valid account to remove funds from (Cash/Bank).")
+    bal = get_account_balance(src["account_id"])
+    if amount > bal:
+        raise ValueError(f"Insufficient balance in {src['name']} ({bal:,.2f} available).")
+    accts = {str(a["code"]): a for a in get_all_accounts()}
+    cap_acct = accts["3000"]
+    desc = (description or "").strip() or f"Funds removed from {src['name']}"
+    return post_journal(
+        desc,
+        [{"account_id": cap_acct["account_id"], "debit": amount},
+         {"account_id": src["account_id"], "credit": amount}],
+        source_type="capital_withdrawal", created_by=created_by, entry_date=entry_date)
+
+
+def get_capital_movements(start_date=None, end_date=None):
+    """List both capital_injection and capital_withdrawal entries together,
+    each tagged with kind 'add'/'remove', newest first."""
+    accounts = {a["account_id"]: a for a in get_all_accounts()}
+    entries = []
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            return []
+        je = {}
+        for row in wb["JournalEntries"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_HEADERS, row)
+            if d.get("source_type") not in ("capital_injection", "capital_withdrawal"):
+                continue
+            je[int(d["entry_id"])] = d
+        lines_by_entry = {}
+        for row in wb["JournalLines"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            d = _row_to_dict(JOURNAL_LINE_HEADERS, row)
+            eid = int(d["entry_id"])
+            if eid in je:
+                lines_by_entry.setdefault(eid, []).append(d)
+        wb.close()
+
+    for eid, entry in je.items():
+        kind = "add" if entry.get("source_type") == "capital_injection" else "remove"
+        acct = None
+        amount = 0.0
+        for ln in lines_by_entry.get(eid, []):
+            aid = int(ln["account_id"])
+            debit = float(ln["debit"] or 0)
+            credit = float(ln["credit"] or 0)
+            if kind == "add" and debit > 0:
+                acct = accounts.get(aid)
+                amount = debit
+            elif kind == "remove" and credit > 0:
+                acct = accounts.get(aid)
+                amount = credit
+        edate = entry.get("date")
+        edd = edate.date() if isinstance(edate, datetime) else edate
+        if start_date and edd and edd < start_date:
+            continue
+        if end_date and edd and edd > end_date:
+            continue
+        entries.append({
+            "entry_id": eid,
+            "kind": kind,
+            "date": edate,
+            "description": entry.get("description"),
+            "account": acct,
+            "amount": round(amount, 2),
+            "created_by": entry.get("created_by"),
+        })
+    entries.sort(key=lambda x: x["entry_id"], reverse=True)
+    return entries
+
+
+def delete_capital_withdrawal(entry_id):
+    eid = int(entry_id)
+    with _lock:
+        wb = _open()
+        if "JournalEntries" not in wb.sheetnames:
+            wb.close()
+            raise ValueError("Entry not found.")
+        ws_je = wb["JournalEntries"]
+        row_idx = None
+        for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+            if row[0].value is None:
+                continue
+            if int(row[0].value) == eid and row[3].value == "capital_withdrawal":
+                row_idx = idx
+                break
+        if row_idx is None:
+            wb.close()
+            raise ValueError("Entry not found.")
+        if "JournalLines" in wb.sheetnames:
+            ws_jl = wb["JournalLines"]
+            del_rows = [i for i, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                        if row[0].value is not None and int(row[1].value) == eid]
+            for idx in sorted(del_rows, reverse=True):
+                ws_jl.delete_rows(idx, 1)
+        ws_je.delete_rows(row_idx, 1)
+        _save(wb)
+        wb.close()
+
+
 # ── Journal sync: post accounting entries from operational data ───────
 
 def _existing_journal_sources():

@@ -2369,6 +2369,97 @@ def delete_capital_injection(entry_id):
         conn.commit()
 
 
+def record_capital_withdrawal(account_id, amount, description="", created_by="system",
+                              entry_date=None):
+    """Record funds pulled out of Cash/Bank (owner draw, transfer out, etc),
+    outside the opening balance. Posts: Dr Owner Capital, Cr Cash/Bank."""
+    amount = round(float(amount), 2)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    src = get_account(int(account_id))
+    if not src or src["type"] != "asset" or str(src["code"]) not in ("1000", "1010"):
+        raise ValueError("Select a valid account to remove funds from (Cash/Bank).")
+    bal = get_account_balance(src["account_id"])
+    if amount > bal:
+        raise ValueError(f"Insufficient balance in {src['name']} ({bal:,.2f} available).")
+    accts = {str(a["code"]): a for a in get_all_accounts()}
+    cap_acct = accts["3000"]
+    desc = (description or "").strip() or f"Funds removed from {src['name']}"
+    return post_journal(
+        desc,
+        [{"account_id": cap_acct["account_id"], "debit": amount},
+         {"account_id": src["account_id"], "credit": amount}],
+        source_type="capital_withdrawal", created_by=created_by, entry_date=entry_date)
+
+
+def get_capital_movements(start_date=None, end_date=None):
+    """List both capital_injection and capital_withdrawal entries together,
+    each tagged with kind 'add'/'remove', newest first."""
+    where = ["je.source_type IN ('capital_injection', 'capital_withdrawal')", "je.tenant_id = %s"]
+    params = [_tid()]
+    if start_date:
+        where.append("DATE(je.date) >= %s")
+        params.append(start_date)
+    if end_date:
+        where.append("DATE(je.date) <= %s")
+        params.append(end_date)
+    clause = " AND ".join(where)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT je.entry_id, je.source_type, je.date, je.description, je.created_by,
+                       da.account_id AS dest_id, da.code AS dest_code, da.name AS dest_name, da.type AS dest_type,
+                       dl.debit AS debit_amount,
+                       ca.account_id AS src_id, ca.code AS src_code, ca.name AS src_name, ca.type AS src_type,
+                       cl.credit AS credit_amount
+                FROM journal_entries je
+                LEFT JOIN journal_lines dl ON dl.entry_id = je.entry_id AND dl.debit > 0
+                LEFT JOIN accounts da ON da.account_id = dl.account_id
+                LEFT JOIN journal_lines cl ON cl.entry_id = je.entry_id AND cl.credit > 0
+                LEFT JOIN accounts ca ON ca.account_id = cl.account_id
+                WHERE {clause}
+                ORDER BY je.entry_id DESC
+            """, params)
+            raw = cur.fetchall()
+    entries = []
+    for r in raw:
+        is_add = r["source_type"] == "capital_injection"
+        kind = "add" if is_add else "remove"
+        if is_add:
+            acct = {"account_id": r["dest_id"], "code": r["dest_code"],
+                    "name": r["dest_name"], "type": r["dest_type"]} if r["dest_id"] else None
+            amount = r["debit_amount"]
+        else:
+            acct = {"account_id": r["src_id"], "code": r["src_code"],
+                    "name": r["src_name"], "type": r["src_type"]} if r["src_id"] else None
+            amount = r["credit_amount"]
+        entries.append({
+            "entry_id": r["entry_id"],
+            "kind": kind,
+            "date": r["date"],
+            "description": r["description"],
+            "account": acct,
+            "amount": round(float(amount or 0), 2),
+            "created_by": r["created_by"],
+        })
+    return entries
+
+
+def delete_capital_withdrawal(entry_id):
+    eid = int(entry_id)
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT entry_id FROM journal_entries WHERE entry_id=%s AND tenant_id=%s AND source_type='capital_withdrawal'",
+                (eid, tid)
+            )
+            if not cur.fetchone():
+                raise ValueError("Entry not found.")
+            cur.execute("DELETE FROM journal_entries WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+        conn.commit()
+
+
 def update_account_name(account_id, name):
     aid = int(account_id)
     name = str(name).strip()

@@ -1,22 +1,22 @@
 {% extends "base.html" %}
-{% block title %}Add Funds{% endblock %}
+{% block title %}Add / Remove Funds{% endblock %}
 {% block content %}
-<h2 class="mb-4"><i class="bi bi-cash-coin"></i> Add Funds</h2>
+<h2 class="mb-4"><i class="bi bi-cash-coin"></i> Add / Remove Funds</h2>
 
 <div class="alert alert-info">
     <i class="bi bi-info-circle"></i>
-    Use this to add extra cash or bank money later (e.g. the owner puts more money
-    in) &mdash; without touching Opening Balances. It posts immediately and shows up
-    in the account's ledger right away.
+    Use this to add or remove cash/bank money (e.g. owner deposit, owner draw, or
+    moving money between Cash and Bank via a remove + add) &mdash; without touching
+    Opening Balances. Posts immediately and shows up in the account's ledger right away.
 </div>
 
 <div class="row g-4">
-    <!-- Add funds -->
+    <!-- Add / Remove funds -->
     <div class="col-lg-4">
         <div class="card">
             <div class="card-header"><strong>Add Funds</strong></div>
             <div class="card-body">
-                <form method="POST">
+                <form method="POST" action="{{ url_for('add_funds') }}">
                     <div class="mb-3">
                         <label class="form-label">Add to <span class="text-danger">*</span></label>
                         <select name="account_id" class="form-select" required>
@@ -34,7 +34,34 @@
                         <input type="text" name="description" class="form-control" placeholder="e.g. Owner deposit">
                     </div>
                     <button type="submit" class="btn btn-dark w-100">
-                        <i class="bi bi-check-circle"></i> Add Funds
+                        <i class="bi bi-plus-circle"></i> Add Funds
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header"><strong>Remove Funds</strong></div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('remove_funds') }}">
+                    <div class="mb-3">
+                        <label class="form-label">Remove from <span class="text-danger">*</span></label>
+                        <select name="account_id" class="form-select" required>
+                            {% for a in pay_accounts %}
+                            <option value="{{ a.account_id }}" {{ 'selected' if a.code == '1000' }}>{{ a.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Amount ({{ currency }}) <span class="text-danger">*</span></label>
+                        <input type="number" name="amount" class="form-control" min="0.01" step="0.01" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Note</label>
+                        <input type="text" name="description" class="form-control" placeholder="e.g. Owner draw">
+                    </div>
+                    <button type="submit" class="btn btn-outline-danger w-100">
+                        <i class="bi bi-dash-circle"></i> Remove Funds
                     </button>
                 </form>
             </div>
@@ -45,7 +72,7 @@
     <div class="col-lg-8">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <strong>Funds Added</strong>
+                <strong>Fund Movements</strong>
                 <div class="d-flex align-items-end gap-2 flex-wrap">
                     <form method="GET" class="d-flex align-items-end gap-2">
                         <div>
@@ -73,7 +100,8 @@
                     <thead class="table-dark">
                         <tr>
                             <th>Date</th>
-                            <th>Added to</th>
+                            <th>Type</th>
+                            <th>Account</th>
                             <th>Note</th>
                             <th class="text-end">Amount ({{ currency }})</th>
                             <th></th>
@@ -83,18 +111,27 @@
                         {% for e in items %}
                         <tr>
                             <td>{{ e.date.strftime('%Y-%m-%d') if e.date and e.date.strftime is defined else e.date }}</td>
+                            <td>
+                                {% if e.kind == 'add' %}
+                                <span class="badge bg-success">Added</span>
+                                {% else %}
+                                <span class="badge bg-danger">Removed</span>
+                                {% endif %}
+                            </td>
                             <td>{{ e.account.name if e.account else '—' }}</td>
                             <td>{{ e.description or '—' }}</td>
-                            <td class="text-end fw-bold">{{ "{:,.2f}".format(e.amount) }}</td>
+                            <td class="text-end fw-bold {{ 'text-danger' if e.kind == 'remove' }}">
+                                {{ '-' if e.kind == 'remove' }}{{ "{:,.2f}".format(e.amount) }}
+                            </td>
                             <td>
                                 <button class="btn btn-xs btn-outline-danger py-0 px-1"
-                                        onclick="confirmDeleteFunds({{ e.entry_id }}, '{{ e.account.name if e.account else '' }}', '{{ '{:,.2f}'.format(e.amount) }}')">
+                                        onclick="confirmDeleteFunds({{ e.entry_id }}, '{{ e.kind }}', '{{ e.account.name if e.account else '' }}', '{{ '{:,.2f}'.format(e.amount) }}')">
                                     <i class="bi bi-trash"></i>
                                 </button>
                             </td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="5" class="text-center text-muted py-4">No entries in this period.</td></tr>
+                        <tr><td colspan="6" class="text-center text-muted py-4">No entries in this period.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
@@ -105,10 +142,12 @@
 
 <form method="POST" id="deleteFundsForm" action=""></form>
 <script>
-function confirmDeleteFunds(entryId, account, amount) {
-    if (!confirm('Delete funds of {{ currency }} ' + amount + ' added to ' + (account || '') + '?\n\nThis will restore the balance.')) return;
+function confirmDeleteFunds(entryId, kind, account, amount) {
+    const verb = kind === 'remove' ? 'removed from' : 'added to';
+    if (!confirm('Delete funds of {{ currency }} ' + amount + ' ' + verb + ' ' + (account || '') + '?\n\nThis will restore the balance.')) return;
+    const base = kind === 'remove' ? '/accounting/remove-funds/' : '/accounting/add-funds/';
     const form = document.getElementById('deleteFundsForm');
-    form.action = '/accounting/add-funds/' + entryId + '/delete';
+    form.action = base + entryId + '/delete';
     form.submit();
 }
 </script>

@@ -162,8 +162,8 @@
                     <a class="nav-link {{ 'active' if request.endpoint == 'expenses' }}" href="{{ url_for('expenses') }}">
                         <i class="bi bi-cash-stack"></i> Expenses
                     </a>
-                    <a class="nav-link {{ 'active' if request.endpoint == 'add_funds' }}" href="{{ url_for('add_funds') }}">
-                        <i class="bi bi-cash-coin"></i> Add Funds
+                    <a class="nav-link {{ 'active' if request.endpoint in ('add_funds', 'remove_funds') }}" href="{{ url_for('add_funds') }}">
+                        <i class="bi bi-cash-coin"></i> Add / Remove Funds
                     </a>
                     <a class="nav-link {{ 'active' if request.endpoint == 'income_statement' }}" href="{{ url_for('income_statement') }}">
                         <i class="bi bi-file-earmark-bar-graph"></i> Income Statement

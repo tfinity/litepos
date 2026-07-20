@@ -1395,8 +1395,8 @@ def add_funds():
         start_date = today.replace(day=1)
         end_date = today
 
-    items = excel_db.get_capital_injections(start_date, end_date)
-    total = round(sum(e["amount"] for e in items), 2)
+    items = excel_db.get_capital_movements(start_date, end_date)
+    total = round(sum(e["amount"] if e["kind"] == "add" else -e["amount"] for e in items), 2)
     return render_template("add_funds.html",
                            pay_accounts=pay_accounts,
                            items=items, total=total,
@@ -1408,6 +1408,33 @@ def add_funds():
 def add_funds_delete(entry_id):
     try:
         excel_db.delete_capital_injection(entry_id)
+        flash("Entry deleted and balance restored.", "success")
+    except Exception as e:
+        flash(f"Could not delete: {e}", "danger")
+    return redirect(url_for("add_funds"))
+
+
+@app.route("/accounting/remove-funds", methods=["POST"])
+@login_required
+def remove_funds():
+    try:
+        excel_db.record_capital_withdrawal(
+            int(request.form["account_id"]),
+            request.form.get("amount", ""),
+            request.form.get("description", ""),
+            created_by=current_user.username,
+        )
+        flash("Funds removed.", "success")
+    except (ValueError, KeyError) as e:
+        flash(str(e) or "Invalid amount.", "danger")
+    return redirect(url_for("add_funds"))
+
+
+@app.route("/accounting/remove-funds/<int:entry_id>/delete", methods=["POST"])
+@login_required
+def remove_funds_delete(entry_id):
+    try:
+        excel_db.delete_capital_withdrawal(entry_id)
         flash("Entry deleted and balance restored.", "success")
     except Exception as e:
         flash(f"Could not delete: {e}", "danger")
