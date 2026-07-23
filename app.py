@@ -1023,6 +1023,36 @@ def record_credit_payment(customer_id):
     return redirect(request.referrer or url_for("credit_ledger"))
 
 
+@app.route("/customers/<int:customer_id>/ledger/<int:entry_id>/edit", methods=["POST"])
+@login_required
+def customer_ledger_entry_edit(customer_id, entry_id):
+    amount_str = request.form.get("amount", "").strip()
+    note = request.form.get("note", "").strip()
+    payment_method = request.form.get("payment_method", "cash").strip().lower()
+    try:
+        amount = float(amount_str)
+    except (ValueError, TypeError):
+        flash("Invalid amount.", "danger")
+        return redirect(url_for("customer_detail", customer_id=customer_id))
+    try:
+        excel_db.update_ledger_payment(entry_id, amount, note, payment_method)
+        flash("Payment entry updated.", "success")
+    except Exception as e:
+        flash(f"Could not update: {e}", "danger")
+    return redirect(url_for("customer_detail", customer_id=customer_id))
+
+
+@app.route("/customers/<int:customer_id>/ledger/<int:entry_id>/delete", methods=["POST"])
+@login_required
+def customer_ledger_entry_delete(customer_id, entry_id):
+    try:
+        excel_db.delete_ledger_payment(entry_id)
+        flash("Payment entry deleted.", "success")
+    except Exception as e:
+        flash(f"Could not delete: {e}", "danger")
+    return redirect(url_for("customer_detail", customer_id=customer_id))
+
+
 @app.route("/credit-ledger/<int:customer_id>/charge", methods=["POST"])
 @login_required
 def record_credit_charge(customer_id):

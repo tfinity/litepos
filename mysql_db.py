@@ -1168,6 +1168,58 @@ def add_ledger_payment(customer_id, amount, note="", payment_method="cash"):
             return cur.lastrowid
 
 
+def delete_ledger_payment(entry_id):
+    eid = int(entry_id)
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM credit_ledger WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Entry not found.")
+            if row["type"] != "credit" or row.get("invoice_id"):
+                raise ValueError("Only standalone payment entries can be deleted.")
+            cur.execute("DELETE FROM journal_entries WHERE source_type='customer_payment' AND source_id=%s AND tenant_id=%s", (eid, tid))
+            cur.execute("DELETE FROM credit_ledger WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+        conn.commit()
+
+
+def update_ledger_payment(entry_id, amount, note="", payment_method="cash"):
+    eid = int(entry_id)
+    tid = _tid()
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    pm = (payment_method or "cash").strip().lower()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM credit_ledger WHERE entry_id=%s AND tenant_id=%s", (eid, tid))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Entry not found.")
+            if row["type"] != "credit" or row.get("invoice_id"):
+                raise ValueError("Only standalone payment entries can be edited.")
+            cur.execute(
+                "UPDATE credit_ledger SET amount=%s, note=%s, payment_method=%s WHERE entry_id=%s AND tenant_id=%s",
+                (amount, (note or "").strip(), pm, eid, tid)
+            )
+            cur.execute("DELETE FROM journal_entries WHERE source_type='customer_payment' AND source_id=%s AND tenant_id=%s", (eid, tid))
+            cur.execute("SELECT account_id, code FROM accounts WHERE tenant_id=%s AND code IN ('1000','1010','4000')", (tid,))
+            acc = {r["code"]: r["account_id"] for r in cur.fetchall()}
+            CASH, BANK, SALES = acc["1000"], acc["1010"], acc["4000"]
+            recv_acct = BANK if pm == "bank" else CASH
+            cur.execute(
+                "INSERT INTO journal_entries (tenant_id, date, description, source_type, source_id, created_by) VALUES (%s,%s,'Customer payment','customer_payment',%s,'system')",
+                (tid, row["created_at"], eid)
+            )
+            je_id = cur.lastrowid
+            cur.executemany(
+                "INSERT INTO journal_lines (tenant_id, entry_id, account_id, debit, credit) VALUES (%s,%s,%s,%s,%s)",
+                [(tid, je_id, recv_acct, amount, 0.0), (tid, je_id, SALES, 0.0, amount)]
+            )
+        conn.commit()
+
+
 def add_ledger_debit(customer_id, amount, note=""):
     cid = normalize_customer_id(customer_id)
     if cid is None:

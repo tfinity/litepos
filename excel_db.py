@@ -1448,6 +1448,124 @@ def add_ledger_payment(customer_id, amount, note="", payment_method="cash"):
     return entry_id
 
 
+def delete_ledger_payment(entry_id):
+    """Delete a standalone customer payment entry and its derived journal entry."""
+    eid = int(entry_id)
+    with _lock:
+        wb = _open()
+        if "CreditLedger" not in wb.sheetnames:
+            wb.close()
+            raise ValueError("Entry not found.")
+        ws_cl = wb["CreditLedger"]
+
+        row_to_delete = None
+        for idx, row in enumerate(ws_cl.iter_rows(min_row=2), start=2):
+            if row[0].value is None:
+                continue
+            if int(row[0].value) == eid:
+                if row[3].value != "credit" or row[2].value is not None:
+                    wb.close()
+                    raise ValueError("Only standalone payment entries can be deleted.")
+                row_to_delete = idx
+                break
+
+        if row_to_delete is None:
+            wb.close()
+            raise ValueError("Entry not found.")
+
+        if "JournalEntries" in wb.sheetnames:
+            ws_je = wb["JournalEntries"]
+            del_eids = set()
+            del_je_rows = []
+            for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+                if row[0].value is None:
+                    continue
+                if row[3].value == "customer_payment" and row[4].value is not None and int(row[4].value) == eid:
+                    del_eids.add(int(row[0].value))
+                    del_je_rows.append(idx)
+            for idx in sorted(del_je_rows, reverse=True):
+                ws_je.delete_rows(idx, 1)
+            if del_eids and "JournalLines" in wb.sheetnames:
+                ws_jl = wb["JournalLines"]
+                del_jl_rows = [i for i, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                               if row[0].value is not None and int(row[1].value) in del_eids]
+                for idx in sorted(del_jl_rows, reverse=True):
+                    ws_jl.delete_rows(idx, 1)
+
+        ws_cl.delete_rows(row_to_delete, 1)
+        _save(wb)
+        wb.close()
+
+
+def update_ledger_payment(entry_id, amount, note="", payment_method="cash"):
+    """Edit a standalone customer payment's amount/note/method and re-post its journal entry."""
+    eid = int(entry_id)
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be positive.")
+    pm = (payment_method or "cash").strip().lower()
+
+    with _lock:
+        wb = _open()
+        if "CreditLedger" not in wb.sheetnames:
+            wb.close()
+            raise ValueError("Entry not found.")
+        ws_cl = wb["CreditLedger"]
+
+        entry_created_at = None
+        for row in ws_cl.iter_rows(min_row=2):
+            if row[0].value is None:
+                continue
+            if int(row[0].value) == eid:
+                if row[3].value != "credit" or row[2].value is not None:
+                    wb.close()
+                    raise ValueError("Only standalone payment entries can be edited.")
+                row[4].value = amount
+                row[5].value = (note or "").strip()
+                row[7].value = pm
+                entry_created_at = row[6].value
+                break
+        else:
+            wb.close()
+            raise ValueError("Entry not found.")
+
+        # Delete old journal entry for this payment
+        if "JournalEntries" in wb.sheetnames:
+            ws_je = wb["JournalEntries"]
+            del_eids = set()
+            del_je_rows = []
+            for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+                if row[0].value is None:
+                    continue
+                if row[3].value == "customer_payment" and row[4].value is not None and int(row[4].value) == eid:
+                    del_eids.add(int(row[0].value))
+                    del_je_rows.append(idx)
+            for idx in sorted(del_je_rows, reverse=True):
+                ws_je.delete_rows(idx, 1)
+            if del_eids and "JournalLines" in wb.sheetnames:
+                ws_jl = wb["JournalLines"]
+                del_jl_rows = [i for i, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                               if row[0].value is not None and int(row[1].value) in del_eids]
+                for idx in sorted(del_jl_rows, reverse=True):
+                    ws_jl.delete_rows(idx, 1)
+
+        _save(wb)
+        wb.close()
+
+    # Re-post journal with updated values
+    sales_acct = get_account_by_code("4000")
+    recv_acct = get_account_by_code("1010" if pm == "bank" else "1000")
+    if sales_acct and recv_acct:
+        post_journal(
+            "Customer payment",
+            [{"account_id": recv_acct["account_id"], "debit": amount, "credit": 0},
+             {"account_id": sales_acct["account_id"], "debit": 0, "credit": amount}],
+            source_type="customer_payment",
+            source_id=eid,
+            entry_date=entry_created_at,
+        )
+
+
 def add_ledger_debit(customer_id, amount, note=""):
     """Record a manual debit against a customer (increases their outstanding balance)."""
     cid = normalize_customer_id(customer_id)
