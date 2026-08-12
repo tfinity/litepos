@@ -875,9 +875,20 @@ def customer_detail(customer_id):
 @app.route("/customers/sales-summary")
 @login_required
 def customers_sales_summary():
-    rows, walk_in = excel_db.get_sales_summary_by_customer()
+    start_str = request.args.get("start", "").strip()
+    end_str = request.args.get("end", "").strip()
+    start_date = end_date = None
+    try:
+        if start_str:
+            start_date = date.fromisoformat(start_str)
+        if end_str:
+            end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = end_date = None
+    rows, walk_in = excel_db.get_sales_summary_by_customer(start_date=start_date, end_date=end_date)
     return render_template("customers_sales_summary.html",
-                           rows=rows, walk_in=walk_in)
+                           rows=rows, walk_in=walk_in,
+                           start_date=start_date, end_date=end_date)
 
 
 # ── API ───────────────────────────────────────────────────────────────

@@ -775,11 +775,11 @@ def customer_lookup():
     return {c["customer_id"]: c for c in get_all_customers()}
 
 
-def get_sales_summary_by_customer():
+def get_sales_summary_by_customer(start_date=None, end_date=None):
     cmap = customer_lookup()
     by_c = {cid: {"customer": c, "invoice_count": 0, "total_revenue": 0.0} for cid, c in cmap.items()}
     walk_in = {"customer": None, "invoice_count": 0, "total_revenue": 0.0}
-    for inv in get_all_invoices():
+    for inv in get_all_invoices(start_date=start_date, end_date=end_date):
         total = float(inv["total"] or 0)
         cid = normalize_customer_id(inv.get("customer_id"))
         if cid is None or cid not in by_c:
