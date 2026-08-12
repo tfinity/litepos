@@ -482,6 +482,15 @@ function onBatchChange() {
     document.getElementById('selPurchase').textContent = cost.toFixed(2);
     document.getElementById('selStock').textContent = qty;
     document.getElementById('selQty').max = quotationMode ? 999999 : qty;
+
+    // This batch may cost more than the catalog sale price (re-priced lot) --
+    // bump the sale price up to cover it so we don't silently sell at a loss.
+    const priceInput = document.getElementById('selSalePrice');
+    const currentPrice = parseFloat(priceInput.value) || 0;
+    if (currentPrice < cost) {
+        priceInput.value = cost.toFixed(2);
+    }
+    validateDiscount();
 }
 document.getElementById('selBatch').addEventListener('change', onBatchChange);
 
