@@ -47,6 +47,34 @@
                            placeholder="Type to search..." autocomplete="off">
                     <div id="searchResults" class="list-group mt-1"></div>
                 </div>
+                <div id="manualItemBlock" style="display:none" class="border rounded p-3 mb-3">
+                    <h6 class="mb-2"><i class="bi bi-pencil-square"></i> Custom item <span class="text-muted small fw-normal">(quotation only — not in stock)</span></h6>
+                    <div class="mb-2">
+                        <label class="form-label small mb-1">Description</label>
+                        <input type="text" id="manualName" class="form-control form-control-sm" placeholder="e.g. Amoxicillin 250mg / 10ml syrup">
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-6">
+                            <label class="form-label small mb-1">Price ({{ currency }} / unit)</label>
+                            <input type="number" id="manualPrice" class="form-control form-control-sm" min="0" step="0.01">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small mb-1">Qty</label>
+                            <input type="number" id="manualQty" class="form-control form-control-sm" min="1" value="1">
+                        </div>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <label class="form-label small mb-1">Discount ({{ currency }})</label>
+                            <input type="number" id="manualDiscount" class="form-control form-control-sm" min="0" step="0.01" value="0">
+                        </div>
+                        <div class="col-6 d-flex align-items-end">
+                            <button class="btn btn-outline-primary w-100" onclick="addManualItem()">
+                                <i class="bi bi-plus"></i> Add custom
+                            </button>
+                        </div>
+                    </div>
+                </div>
                 <div id="selectedProduct" style="display:none" class="border rounded p-3 mb-3 bg-light">
                     <h6 id="selName"></h6>
                     <div class="mb-2">
@@ -253,7 +281,16 @@ function toggleCost() {
 }
 
 function onModeToggle() {
-    quotationMode = document.getElementById('quotationModeToggle').checked;
+    const wantQuotation = document.getElementById('quotationModeToggle').checked;
+    if (!wantQuotation && cart.some(item => item.manual)) {
+        if (!confirm('Turning off Quotation Mode will remove custom (non-catalog) items from the cart, since they can\'t be part of a real sale. Continue?')) {
+            document.getElementById('quotationModeToggle').checked = true;
+            return;
+        }
+        cart = cart.filter(item => !item.manual);
+    }
+    quotationMode = wantQuotation;
+    document.getElementById('manualItemBlock').style.display = quotationMode ? 'block' : 'none';
     const title = document.getElementById('pageTitle');
     if (quotationMode) {
         title.innerHTML = '<i class="bi bi-file-text"></i> New Quotation';
@@ -264,6 +301,42 @@ function onModeToggle() {
         document.getElementById('submitBtn').style.display = '';
         document.getElementById('quotationBtn').style.display = '';
     }
+    renderCart();
+}
+
+function addManualItem() {
+    const name = document.getElementById('manualName').value.trim();
+    const price = parseFloat(document.getElementById('manualPrice').value);
+    const qty = parseInt(document.getElementById('manualQty').value);
+    const disc = parseFloat(document.getElementById('manualDiscount').value) || 0;
+
+    if (!name) { alert('Enter a description for the custom item.'); return; }
+    if (!Number.isFinite(price) || price < 0) { alert('Enter a valid price.'); return; }
+    if (!Number.isFinite(qty) || qty <= 0) { alert('Enter a valid quantity.'); return; }
+    if (disc < 0 || disc > price) { alert('Discount cannot exceed price.'); return; }
+
+    cart.push({
+        product_id: null,
+        manual: true,
+        product_name: name,
+        list_counter: price,
+        unit_price: price,
+        purchase_price: 0,
+        mrp: 0,
+        quantity: qty,
+        discount_per_unit: disc,
+        discount_total: disc * qty,
+        line_total: (price - disc) * qty,
+        max_stock: 999999,
+        batch_id: null,
+        batch_label: null,
+    });
+
+    document.getElementById('manualName').value = '';
+    document.getElementById('manualPrice').value = '';
+    document.getElementById('manualQty').value = 1;
+    document.getElementById('manualDiscount').value = 0;
+    document.getElementById('manualName').focus();
     renderCart();
 }
 
@@ -647,12 +720,14 @@ function renderCart() {
             const stockHint = quotationMode && item.quantity > item.max_stock
                 ? `<div class="small text-warning"><i class="bi bi-exclamation-triangle"></i> Stock: ${item.max_stock}</div>`
                 : '';
-            const costLine = showCost
+            const costLine = (showCost && !item.manual)
                 ? `<div class="small text-muted"><i class="bi bi-tag"></i> Purch: ${item.purchase_price.toFixed(2)} · List: ${item.list_counter.toFixed(2)} · MRP: ${(item.mrp || 0).toFixed(2)}</div>`
                 : '';
-            const batchHint = item.batch_label
-                ? `<div class="small text-muted"><i class="bi bi-layers"></i> ${escapeHtml(item.batch_label)}</div>`
-                : '';
+            const batchHint = item.manual
+                ? `<div class="small text-muted"><i class="bi bi-pencil-square"></i> Custom item</div>`
+                : (item.batch_label
+                    ? `<div class="small text-muted"><i class="bi bi-layers"></i> ${escapeHtml(item.batch_label)}</div>`
+                    : '');
             return `<tr>
                 <td>${escapeHtml(item.product_name)}${batchHint}${costLine}${listHint}${stockHint}</td>
                 <td>
@@ -708,13 +783,19 @@ function onPaymentMethodChange() {
 function printQuotation() {
     if (cart.length === 0) return;
     const payload = {
-        items: cart.map(item => ({
+        items: cart.map(item => item.manual ? {
+            manual: true,
+            product_name: item.product_name,
+            quantity: item.quantity,
+            discount_amount: item.discount_per_unit,
+            unit_price: item.unit_price,
+        } : {
             product_id: item.product_id,
             quantity: item.quantity,
             discount_amount: item.discount_per_unit,
             unit_price: item.unit_price,
             batch_id: item.batch_id || null,
-        })),
+        }),
         delivery_charges: parseFloat(document.getElementById('deliveryCharges').value) || 0,
     };
     const cidRaw = document.getElementById('customerId').value.trim();
@@ -728,6 +809,10 @@ function printQuotation() {
 
 function submitInvoice() {
     if (cart.length === 0) return;
+    if (cart.some(item => item.manual)) {
+        alert('Cart has custom (non-catalog) items which cannot be sold directly. Switch back to Quotation Mode or remove them first.');
+        return;
+    }
 
     const pm = document.getElementById('paymentMethod').value;
     if (pm === 'Credit') {

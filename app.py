@@ -669,17 +669,28 @@ def quotation_preview():
     discount_total = 0.0
 
     for item in cart_items:
-        pid = int(item["product_id"])
         qty = int(item["quantity"])
         discount_per_unit = float(item.get("discount_amount", 0))
-        product = excel_db.get_product(pid)
-        if not product:
-            return f"Product {pid} not found.", 400
-        unit_price = float(item.get("unit_price") or product["counter_price"])
+        if item.get("manual"):
+            name = (item.get("product_name") or "").strip()
+            if not name:
+                return "Custom item needs a description.", 400
+            unit_price = float(item.get("unit_price") or 0)
+        else:
+            pid = int(item["product_id"])
+            product = excel_db.get_product(pid)
+            if not product:
+                return f"Product {pid} not found.", 400
+            name = product["name"]
+            unit_price = float(item.get("unit_price") or product["counter_price"])
+        if qty <= 0:
+            return "Invalid quantity.", 400
+        if unit_price < 0:
+            return "Invalid price.", 400
         line_discount = discount_per_unit * qty
         line_total = (unit_price - discount_per_unit) * qty
         line_items.append({
-            "product_name": product["name"],
+            "product_name": name,
             "quantity": qty,
             "counter_price": unit_price,
             "discount_amount": line_discount,
