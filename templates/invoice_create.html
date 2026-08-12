@@ -462,8 +462,11 @@ function populateBatchSelect(product) {
     sel.innerHTML = batches.map(b => {
         const tag = b.batch_id === soonestId ? ' — expires soonest' : '';
         const exp = b.expiry_date ? `, exp ${b.expiry_date}` : '';
-        return `<option value="${b.batch_id}" data-cost="${b.unit_cost}" data-qty="${b.qty_remaining}">
-            ${escapeHtml(b.batch_number || ('#' + b.batch_id))} — qty ${b.qty_remaining} @ ${CURRENCY} ${b.unit_cost.toFixed(2)}${exp}${tag}
+        const rawLabel = b.batch_number || ('#' + b.batch_id);
+        const label = escapeHtml(rawLabel);
+        const safeLabel = escapeHtml(`${rawLabel} — qty ${b.qty_remaining}${exp}${tag}`);
+        return `<option value="${b.batch_id}" data-cost="${b.unit_cost}" data-qty="${b.qty_remaining}" data-label-safe="${safeLabel}">
+            ${label} — qty ${b.qty_remaining} @ ${CURRENCY} ${b.unit_cost.toFixed(2)}${exp}${tag}
         </option>`;
     }).join('');
     wrap.style.display = 'block';
@@ -520,7 +523,7 @@ function addToCart() {
     const batchSel = document.getElementById('selBatch');
     const batchId = batchSel.value ? parseInt(batchSel.value) : null;
     const batchOpt = batchSel.options[batchSel.selectedIndex];
-    const batchLabel = batchOpt ? batchOpt.textContent.trim() : null;
+    const batchLabel = batchOpt ? (batchOpt.dataset.labelSafe || batchOpt.textContent.trim()) : null;
 
     if (qty <= 0 || (!quotationMode && qty > maxStock)) {
         alert('Invalid quantity. Available stock: ' + maxStock);
