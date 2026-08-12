@@ -114,6 +114,12 @@
                 <td class="text-right">{{ "{:,.2f}".format(tax_amount) }}</td>
             </tr>
             {% endif %}
+            {% if delivery_charges %}
+            <tr>
+                <td>Delivery:</td>
+                <td class="text-right">{{ "{:,.2f}".format(delivery_charges) }}</td>
+            </tr>
+            {% endif %}
             <tr class="grand-total">
                 <td>TOTAL:</td>
                 <td class="text-right">{{ currency }} {{ "{:,.2f}".format(total) }}</td>

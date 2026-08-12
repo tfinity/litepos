@@ -700,15 +700,17 @@ def quotation_preview():
         subtotal += unit_price * qty
         discount_total += line_discount
 
+    delivery_charges = float(data.get("delivery_charges") or 0)
     net = subtotal - discount_total
     tax_amount = round(net * TAX_RATE, 2)
-    total = round(net + tax_amount, 2)
+    total = round(net + tax_amount + delivery_charges, 2)
 
     from datetime import datetime as _dt
     return render_template(
         "quotation_receipt.html",
         items=line_items,
         subtotal=round(subtotal, 2),
+        delivery_charges=round(delivery_charges, 2),
         discount_total=round(discount_total, 2),
         tax_rate=TAX_RATE,
         tax_amount=tax_amount,
