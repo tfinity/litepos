@@ -46,12 +46,18 @@
                         <div class="col-md-4">
                             <label class="form-label">{{ "Quantity in Stock" if product else "Opening Stock" }}</label>
                             <input type="number" name="quantity" class="form-control" min="0"
-                                   value="{{ product.quantity if product else 0 }}">
+                                   value="{{ product.quantity if product else 0 }}"
+                                   {% if has_batches %}readonly title="Derived from batch stock — see the batches list below to adjust it"{% endif %}>
                             {% if not product %}
                             <div class="form-text">
                                 Only stock you <strong>already have</strong>. New stock arriving from a
                                 supplier should be added through <strong>Purchases</strong> (so cost,
                                 supplier and payable are recorded) — don't enter it here too.
+                            </div>
+                            {% elif has_batches %}
+                            <div class="form-text">
+                                This product has batch history, so stock is derived from its batches'
+                                remaining quantity and can't be typed in here directly.
                             </div>
                             {% endif %}
                         </div>

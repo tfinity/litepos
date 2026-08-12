@@ -461,6 +461,8 @@ def update_product(product_id, data):
         expiry = datetime.strptime(expiry, "%Y-%m-%d").date()
     elif not isinstance(expiry, (date, datetime)):
         expiry = None
+    pid = int(product_id)
+    tid = _tid()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -478,9 +480,19 @@ def update_product(product_id, data):
                 data.get("barcode", ""),
                 expiry,
                 data.get("category", ""),
-                int(product_id),
-                _tid(),
+                pid,
+                tid,
             ))
+            # Quantity/cost are derived from batch stock once a product has
+            # batch history -- the form's typed value would otherwise drift
+            # out of sync with what invoicing actually sells from. Products
+            # with no batches yet keep taking the typed quantity as-is.
+            cur.execute(
+                "SELECT 1 FROM product_batches WHERE product_id=%s AND tenant_id=%s LIMIT 1",
+                (pid, tid)
+            )
+            if cur.fetchone():
+                _recompute_product_cache(cur, tid, pid)
 
 
 def delete_product(product_id):

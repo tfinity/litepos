@@ -453,8 +453,9 @@ def product_edit(product_id):
         p["category"] for p in excel_db.get_all_products()
         if p.get("category")
     ))
+    has_batches = bool(excel_db.get_product_batches(product_id=product_id))
     return render_template("product_form.html",
-                           product=product, categories=categories)
+                           product=product, categories=categories, has_batches=has_batches)
 
 
 @app.route("/products/<int:product_id>/delete", methods=["POST"])

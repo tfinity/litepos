@@ -446,11 +446,12 @@ def add_product(data):
 
 
 def update_product(product_id, data):
+    pid = int(product_id)
     with _lock:
         wb = _open()
         ws = wb["Products"]
         for row in ws.iter_rows(min_row=2):
-            if row[0].value is not None and int(row[0].value) == int(product_id):
+            if row[0].value is not None and int(row[0].value) == pid:
                 row[1].value = data["name"]
                 row[2].value = _to_float(data.get("purchase_price"))
                 row[3].value = _to_float(data.get("counter_price"))
@@ -465,6 +466,19 @@ def update_product(product_id, data):
                 row[7].value = expiry
                 row[8].value = data.get("category", "")
                 break
+        # Quantity/cost are derived from batch stock once a product has batch
+        # history -- the form's typed value would otherwise drift out of sync
+        # with what invoicing actually sells from (see _recompute_product_cache).
+        # Products with no batches yet (never purchased through the batch
+        # system) keep taking the typed quantity as-is.
+        if "ProductBatches" in wb.sheetnames:
+            ws_b = wb["ProductBatches"]
+            has_batches = any(
+                r[0].value is not None and r[1].value is not None and int(r[1].value) == pid
+                for r in ws_b.iter_rows(min_row=2)
+            )
+            if has_batches:
+                _recompute_product_cache(wb, pid)
         _save(wb)
         wb.close()
 
