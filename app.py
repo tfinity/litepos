@@ -525,6 +525,44 @@ def _attach_customer(invoice, cmap):
     invoice["customer"] = cmap.get(cid) if cid is not None else None
 
 
+def _compute_invoice_payment_status(ledger_entries):
+    """FIFO-allocate a customer's credit-ledger payments against their credit-sale
+    debts (oldest debt first -- standard accounts-receivable practice) to work out,
+    for display only, how much of each specific invoice has actually been paid off.
+    Ledger payments are recorded against the customer's running balance, not any
+    one invoice (add_ledger_payment always writes invoice_id=None) -- this doesn't
+    change that; it's a read-time allocation so the UI can show real status instead
+    of the invoice's original (and permanently frozen) payment_method.
+    Returns {invoice_id: {"status": "paid"|"partial"|"unpaid", "paid": float, "owed": float}}."""
+    by_customer = {}
+    for e in ledger_entries:
+        cid = excel_db.normalize_customer_id(e.get("customer_id"))
+        if cid is None:
+            continue
+        by_customer.setdefault(cid, []).append(e)
+
+    result = {}
+    for cid, entries in by_customer.items():
+        debts = sorted(
+            (e for e in entries if e.get("type") == "debit" and e.get("invoice_id") is not None),
+            key=lambda x: x["entry_id"],
+        )
+        pool = sum(float(e["amount"] or 0) for e in entries if e.get("type") == "credit")
+        for d in debts:
+            iid = int(d["invoice_id"])
+            owed = float(d["amount"] or 0)
+            paid = max(0.0, min(pool, owed))
+            pool -= paid
+            if paid <= 0.004:
+                status = "unpaid"
+            elif paid >= owed - 0.005:
+                status = "paid"
+            else:
+                status = "partial"
+            result[iid] = {"status": status, "paid": round(paid, 2), "owed": round(owed, 2)}
+    return result
+
+
 def _pdf_response(pdf_bytes, filename):
     return Response(
         pdf_bytes,
@@ -546,10 +584,16 @@ def invoices():
         start_date = today.replace(day=1)
         end_date = today
     cmap = excel_db.customer_lookup()
+    payment_status = _compute_invoice_payment_status(excel_db.get_credit_ledger())
     all_invoices = []
     for inv in excel_db.get_all_invoices(start_date=start_date, end_date=end_date):
         inv = dict(inv)
         _attach_customer(inv, cmap)
+        if inv.get("payment_method") == "Credit":
+            inv["credit_status"] = payment_status.get(
+                int(inv["invoice_id"]),
+                {"status": "unpaid", "paid": 0.0, "owed": float(inv["total"] or 0)},
+            )
         all_invoices.append(inv)
     return render_template("invoices.html", invoices=all_invoices,
                            start_date=start_date, end_date=end_date)
@@ -718,6 +762,14 @@ def invoice_detail(invoice_id):
     invoice = dict(invoice)
     cmap = excel_db.customer_lookup()
     _attach_customer(invoice, cmap)
+    if invoice.get("payment_method") == "Credit":
+        cid = excel_db.normalize_customer_id(invoice.get("customer_id"))
+        ledger_entries = excel_db.get_credit_ledger(customer_id=cid) if cid is not None else []
+        payment_status = _compute_invoice_payment_status(ledger_entries)
+        invoice["credit_status"] = payment_status.get(
+            int(invoice["invoice_id"]),
+            {"status": "unpaid", "paid": 0.0, "owed": float(invoice["total"] or 0)},
+        )
     items = excel_db.get_invoice_items(invoice_id)
     batch_labels = {b["batch_id"]: b["batch_number"] for b in excel_db.get_product_batches()}
     for it in items:
@@ -1135,6 +1187,13 @@ def customer_detail(customer_id):
     revenue = sum(float(i["total"] or 0) for i in invoices)
     credit_debt, credit_paid, credit_balance = excel_db.get_customer_balance(customer_id)
     ledger_entries = excel_db.get_credit_ledger(customer_id=customer_id)
+    payment_status = _compute_invoice_payment_status(ledger_entries)
+    for inv in invoices:
+        if inv.get("payment_method") == "Credit":
+            inv["credit_status"] = payment_status.get(
+                int(inv["invoice_id"]),
+                {"status": "unpaid", "paid": 0.0, "owed": float(inv["total"] or 0)},
+            )
     return render_template(
         "customer_detail.html",
         customer=customer,

@@ -36,7 +36,14 @@
                     <div class="col-md-4">
                         <strong>Payment:</strong>
                         {% if invoice.payment_method == 'Credit' %}
-                        <span class="badge bg-danger">UNPAID / Credit</span>
+                            {% set cs = invoice.credit_status %}
+                            {% if cs and cs.status == 'paid' %}
+                            <span class="badge bg-success">PAID (was Credit)</span>
+                            {% elif cs and cs.status == 'partial' %}
+                            <span class="badge bg-warning text-dark">PARTIAL &mdash; {{ currency }} {{ "{:,.2f}".format(cs.owed - cs.paid) }} due</span>
+                            {% else %}
+                            <span class="badge bg-danger">UNPAID / Credit</span>
+                            {% endif %}
                         {% else %}
                         <span class="badge bg-secondary">{{ invoice.payment_method }}</span>
                         {% endif %}

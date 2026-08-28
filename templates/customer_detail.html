@@ -146,7 +146,14 @@
                         <td class="text-end">{{ "{:,.2f}".format(inv.total) }}</td>
                         <td>
                             {% if inv.payment_method == 'Credit' %}
-                            <span class="badge bg-danger">UNPAID</span>
+                                {% set cs = inv.credit_status %}
+                                {% if cs and cs.status == 'paid' %}
+                                <span class="badge bg-success">PAID (Credit)</span>
+                                {% elif cs and cs.status == 'partial' %}
+                                <span class="badge bg-warning text-dark">PARTIAL ({{ currency }} {{ "{:,.2f}".format(cs.owed - cs.paid) }} due)</span>
+                                {% else %}
+                                <span class="badge bg-danger">UNPAID</span>
+                                {% endif %}
                             {% else %}
                             <span class="badge bg-secondary">{{ inv.payment_method }}</span>
                             {% endif %}
