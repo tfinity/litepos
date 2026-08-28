@@ -9,7 +9,7 @@ load_dotenv()
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    flash, jsonify,
+    flash, jsonify, Response,
 )
 from flask_login import (
     LoginManager, UserMixin, login_user, logout_user,
@@ -19,6 +19,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 import db as excel_db
 import tenant
+import pdf_export
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
@@ -524,6 +525,14 @@ def _attach_customer(invoice, cmap):
     invoice["customer"] = cmap.get(cid) if cid is not None else None
 
 
+def _pdf_response(pdf_bytes, filename):
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.route("/invoices")
 @login_required
 def invoices():
@@ -865,13 +874,10 @@ def quotations():
                            start_date=start_date, end_date=end_date)
 
 
-@app.route("/quotations/<int:quotation_id>")
-@login_required
-def quotation_view(quotation_id):
+def _quotation_view_data(quotation_id):
     quotation = excel_db.get_quotation(quotation_id)
     if not quotation:
-        flash("Quotation not found.", "danger")
-        return redirect(url_for("quotations"))
+        return None, None, None
     items = excel_db.get_quotation_items(quotation_id)
     line_items = [{
         "product_id": it.get("product_id"),
@@ -888,6 +894,16 @@ def quotation_view(quotation_id):
     if cid is not None:
         cmap = excel_db.customer_lookup()
         customer = cmap.get(cid)
+    return quotation, line_items, customer
+
+
+@app.route("/quotations/<int:quotation_id>")
+@login_required
+def quotation_view(quotation_id):
+    quotation, line_items, customer = _quotation_view_data(quotation_id)
+    if quotation is None:
+        flash("Quotation not found.", "danger")
+        return redirect(url_for("quotations"))
     return render_template(
         "quotation_receipt.html",
         items=line_items,
@@ -905,6 +921,24 @@ def quotation_view(quotation_id):
         business_phone=BUSINESS_PHONE,
         receipt_footer=RECEIPT_FOOTER,
     )
+
+
+@app.route("/quotations/<int:quotation_id>/pdf")
+@login_required
+def quotation_pdf(quotation_id):
+    quotation, line_items, customer = _quotation_view_data(quotation_id)
+    if quotation is None:
+        flash("Quotation not found.", "danger")
+        return redirect(url_for("quotations"))
+    pdf_bytes = pdf_export.build_quotation_pdf(
+        quotation["quotation_id"], line_items,
+        float(quotation["subtotal"]), float(quotation["discount_total"]),
+        float(quotation["tax_rate"] or 0), float(quotation["tax_amount"]),
+        float(quotation.get("delivery_charges") or 0), float(quotation["total"]),
+        customer, quotation["created_at"],
+        CURRENCY, BUSINESS_NAME, BUSINESS_ADDRESS, BUSINESS_PHONE, RECEIPT_FOOTER,
+    )
+    return _pdf_response(pdf_bytes, f"quotation-Q-{quotation_id:04d}.pdf")
 
 
 @app.route("/quotations/<int:quotation_id>/delete", methods=["POST"])
@@ -974,23 +1008,44 @@ def invoice_edit(invoice_id):
                            tax_rate=TAX_RATE)
 
 
-@app.route("/invoices/<int:invoice_id>/receipt")
-@login_required
-def invoice_receipt(invoice_id):
+def _invoice_receipt_data(invoice_id):
     invoice = excel_db.get_invoice(invoice_id)
     if not invoice:
-        flash("Invoice not found.", "danger")
-        return redirect(url_for("invoices"))
+        return None, None
     invoice = dict(invoice)
     cmap = excel_db.customer_lookup()
     _attach_customer(invoice, cmap)
     items = excel_db.get_invoice_items(invoice_id)
+    return invoice, items
+
+
+@app.route("/invoices/<int:invoice_id>/receipt")
+@login_required
+def invoice_receipt(invoice_id):
+    invoice, items = _invoice_receipt_data(invoice_id)
+    if invoice is None:
+        flash("Invoice not found.", "danger")
+        return redirect(url_for("invoices"))
     return render_template("receipt.html",
                            invoice=invoice, items=items,
                            business_name=BUSINESS_NAME,
                            business_address=BUSINESS_ADDRESS,
                            business_phone=BUSINESS_PHONE,
                            receipt_footer=RECEIPT_FOOTER)
+
+
+@app.route("/invoices/<int:invoice_id>/receipt/pdf")
+@login_required
+def invoice_receipt_pdf(invoice_id):
+    invoice, items = _invoice_receipt_data(invoice_id)
+    if invoice is None:
+        flash("Invoice not found.", "danger")
+        return redirect(url_for("invoices"))
+    pdf_bytes = pdf_export.build_receipt_pdf(
+        invoice, items, CURRENCY, BUSINESS_NAME, BUSINESS_ADDRESS,
+        BUSINESS_PHONE, RECEIPT_FOOTER,
+    )
+    return _pdf_response(pdf_bytes, f"receipt-INV-{invoice_id:04d}.pdf")
 
 
 # ── Customers ────────────────────────────────────────────────────────

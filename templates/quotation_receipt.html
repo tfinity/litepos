@@ -139,6 +139,7 @@
 
     <button class="btn-print no-print" onclick="window.print()">Print Quotation</button>
     {% if quotation_id %}
+    <a href="{{ url_for('quotation_pdf', quotation_id=quotation_id) }}" class="btn-back no-print" style="background:#dc3545">Save as PDF</a>
     <a class="btn-back no-print" href="{{ url_for('quotations') }}">Back to Quotations</a>
     {% else %}
     <button class="btn-back no-print" onclick="window.close()">Close</button>

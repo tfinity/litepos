@@ -102,6 +102,8 @@
                        class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i> View</a>
                     <a href="{{ url_for('invoice_receipt', invoice_id=inv.invoice_id) }}"
                        class="btn btn-sm btn-outline-success"><i class="bi bi-printer"></i> Receipt</a>
+                    <a href="{{ url_for('invoice_receipt_pdf', invoice_id=inv.invoice_id) }}"
+                       class="btn btn-sm btn-outline-danger"><i class="bi bi-file-earmark-pdf"></i> PDF</a>
                 </td>
             </tr>
             {% endfor %}

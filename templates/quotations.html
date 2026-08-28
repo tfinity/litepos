@@ -74,6 +74,8 @@
                 <td class="text-nowrap">
                     <a href="{{ url_for('quotation_view', quotation_id=q.quotation_id) }}"
                        class="btn btn-sm btn-outline-primary"><i class="bi bi-printer"></i> View</a>
+                    <a href="{{ url_for('quotation_pdf', quotation_id=q.quotation_id) }}"
+                       class="btn btn-sm btn-outline-danger"><i class="bi bi-file-earmark-pdf"></i> PDF</a>
                     {% if q.status == 'converted' and q.converted_invoice_id %}
                     <a href="{{ url_for('invoice_detail', invoice_id=q.converted_invoice_id) }}"
                        class="btn btn-sm btn-outline-success"><i class="bi bi-receipt"></i> Sale</a>
