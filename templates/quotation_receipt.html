@@ -63,6 +63,7 @@
     <div class="quotation-badge">*** QUOTATION ***</div>
 
     <div class="receipt-info">
+        {% if quotation_id %}<strong>Quotation #:</strong> Q-{{ "%04d"|format(quotation_id) }}<br>{% endif %}
         <strong>Date:</strong> {{ generated_at.strftime('%Y-%m-%d %H:%M') }}<br>
         {% if customer %}
         <strong>Customer:</strong> {{ customer.name }}
@@ -137,6 +138,10 @@
     </div>
 
     <button class="btn-print no-print" onclick="window.print()">Print Quotation</button>
+    {% if quotation_id %}
+    <a class="btn-back no-print" href="{{ url_for('quotations') }}">Back to Quotations</a>
+    {% else %}
     <button class="btn-back no-print" onclick="window.close()">Close</button>
+    {% endif %}
 </body>
 </html>

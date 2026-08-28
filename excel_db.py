@@ -131,6 +131,15 @@ BATCH_HEADERS = [
     "batch_id", "product_id", "batch_number", "supplier_id", "purchase_id",
     "unit_cost", "qty_received", "qty_remaining", "expiry_date", "received_at",
 ]
+QUOTATION_HEADERS = [
+    "quotation_id", "created_at", "customer_id", "subtotal", "discount_total",
+    "tax_rate", "tax_amount", "delivery_charges", "total",
+    "status", "converted_invoice_id", "created_by",
+]
+QUOTATION_ITEM_HEADERS = [
+    "item_id", "quotation_id", "product_id", "product_name", "manual",
+    "quantity", "unit_price", "discount_amount", "line_total", "batch_id",
+]
 
 # ── Double-entry accounting ──────────────────────────────────────────
 ACCOUNT_HEADERS = [
@@ -225,6 +234,10 @@ def init_workbook():
         ws15.append(PARTNER_TXN_HEADERS)
         ws16 = wb.create_sheet("ProductBatches")
         ws16.append(BATCH_HEADERS)
+        ws17 = wb.create_sheet("Quotations")
+        ws17.append(QUOTATION_HEADERS)
+        ws18 = wb.create_sheet("QuotationItems")
+        ws18.append(QUOTATION_ITEM_HEADERS)
         _save(wb)
         wb.close()
     ensure_workbook_schema()
@@ -285,6 +298,12 @@ def ensure_workbook_schema():
             changed = True
         if "ProductBatches" not in wb.sheetnames:
             wb.create_sheet("ProductBatches").append(BATCH_HEADERS)
+            changed = True
+        if "Quotations" not in wb.sheetnames:
+            wb.create_sheet("Quotations").append(QUOTATION_HEADERS)
+            changed = True
+        if "QuotationItems" not in wb.sheetnames:
+            wb.create_sheet("QuotationItems").append(QUOTATION_ITEM_HEADERS)
             changed = True
         # Add last_supplier_id column to Products if missing
         ws_prod = wb["Products"]
@@ -1086,6 +1105,163 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                 for idx in sorted(del_jl_rows, reverse=True):
                     ws_jl.delete_rows(idx, 1)
 
+        _save(wb)
+        wb.close()
+
+
+def _ensure_quotation_sheets(wb):
+    """Self-heal: existing tenant workbooks created before quotation history was
+    added won't have these sheets until ensure_workbook_schema() runs for them
+    (which only happens for brand-new tenants) -- so every entry point creates
+    them lazily on first use, same pattern as ProductBatches."""
+    changed = False
+    if "Quotations" not in wb.sheetnames:
+        wb.create_sheet("Quotations").append(QUOTATION_HEADERS)
+        changed = True
+    if "QuotationItems" not in wb.sheetnames:
+        wb.create_sheet("QuotationItems").append(QUOTATION_ITEM_HEADERS)
+        changed = True
+    return changed
+
+
+def save_quotation(items, subtotal, discount_total, tax_rate, tax_amount,
+                    delivery_charges, total, customer_id=None, created_by="system"):
+    """Persist a printed quotation and its line items. items: list of dicts with
+    keys product_id (None if manual), product_name, manual (bool), quantity,
+    unit_price, discount_amount (total discount for the line), line_total,
+    batch_id (optional). Returns the new quotation_id."""
+    cid = normalize_customer_id(customer_id)
+    with _lock:
+        wb = _open()
+        _ensure_quotation_sheets(wb)
+        ws_q = wb["Quotations"]
+        ws_qi = wb["QuotationItems"]
+        qid = _next_id(ws_q)
+        item_id_start = _next_id(ws_qi)
+        ws_q.append([
+            qid, datetime.now(), cid, round(subtotal, 2), round(discount_total, 2),
+            tax_rate, round(tax_amount, 2), round(delivery_charges, 2), round(total, 2),
+            "open", None, created_by,
+        ])
+        for i, item in enumerate(items):
+            qty = int(item["quantity"])
+            discount_amount = float(item.get("discount_amount", 0))
+            ws_qi.append([
+                item_id_start + i, qid,
+                item.get("product_id"), item.get("product_name"),
+                bool(item.get("manual")), qty, float(item.get("unit_price") or 0),
+                round(discount_amount, 2), round(float(item.get("line_total") or 0), 2),
+                item.get("batch_id"),
+            ])
+        _save(wb)
+        wb.close()
+    return qid
+
+
+def get_all_quotations(start_date=None, end_date=None):
+    with _lock:
+        wb = _open()
+        if "Quotations" not in wb.sheetnames:
+            wb.close()
+            return []
+        ws = wb["Quotations"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            q = _row_to_dict(QUOTATION_HEADERS, row)
+            if start_date or end_date:
+                dt = q.get("created_at")
+                q_date = dt.date() if hasattr(dt, "date") else dt
+                if q_date:
+                    if start_date and q_date < start_date:
+                        continue
+                    if end_date and q_date > end_date:
+                        continue
+            rows.append(q)
+        wb.close()
+    rows.sort(key=lambda x: x["quotation_id"], reverse=True)
+    return rows
+
+
+def get_quotation(quotation_id):
+    qid = int(quotation_id)
+    with _lock:
+        wb = _open()
+        if "Quotations" not in wb.sheetnames:
+            wb.close()
+            return None
+        ws = wb["Quotations"]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            q = _row_to_dict(QUOTATION_HEADERS, row)
+            if int(q["quotation_id"]) == qid:
+                wb.close()
+                return q
+        wb.close()
+    return None
+
+
+def get_quotation_items(quotation_id):
+    qid = int(quotation_id)
+    with _lock:
+        wb = _open()
+        if "QuotationItems" not in wb.sheetnames:
+            wb.close()
+            return []
+        ws = wb["QuotationItems"]
+        items = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(QUOTATION_ITEM_HEADERS, row)
+            if int(item["quotation_id"]) == qid:
+                items.append(item)
+        wb.close()
+    return items
+
+
+def mark_quotation_converted(quotation_id, invoice_id):
+    qid = int(quotation_id)
+    with _lock:
+        wb = _open()
+        if "Quotations" not in wb.sheetnames:
+            wb.close()
+            return
+        ws = wb["Quotations"]
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None and int(row[0].value) == qid:
+                row[9].value = "converted"           # status
+                row[10].value = int(invoice_id)       # converted_invoice_id
+                break
+        _save(wb)
+        wb.close()
+
+
+def delete_quotation(quotation_id):
+    qid = int(quotation_id)
+    with _lock:
+        wb = _open()
+        if "Quotations" not in wb.sheetnames:
+            wb.close()
+            raise ValueError("Quotation not found.")
+        ws_q = wb["Quotations"]
+        ws_qi = wb["QuotationItems"] if "QuotationItems" in wb.sheetnames else None
+        row_to_delete = None
+        for idx, row in enumerate(ws_q.iter_rows(min_row=2), start=2):
+            if row[0].value is not None and int(row[0].value) == qid:
+                row_to_delete = idx
+                break
+        if row_to_delete is None:
+            wb.close()
+            raise ValueError("Quotation not found.")
+        ws_q.delete_rows(row_to_delete, 1)
+        if ws_qi is not None:
+            del_rows = [idx for idx, row in enumerate(ws_qi.iter_rows(min_row=2), start=2)
+                        if row[0].value is not None and int(row[1].value) == qid]
+            for idx in sorted(del_rows, reverse=True):
+                ws_qi.delete_rows(idx, 1)
         _save(wb)
         wb.close()
 

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Quotations{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2><i class="bi bi-file-text"></i> Quotations</h2>
+    <a href="{{ url_for('invoice_create') }}" class="btn btn-primary">
+        <i class="bi bi-cart-plus"></i> New Sale
+    </a>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label mb-1 small">From</label>
+                <input type="date" name="start" class="form-control" value="{{ start_date.isoformat() if start_date else '' }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label mb-1 small">To</label>
+                <input type="date" name="end" class="form-control" value="{{ end_date.isoformat() if end_date else '' }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label mb-1 small">&nbsp;</label>
+                <button type="submit" class="btn btn-dark w-100"><i class="bi bi-funnel"></i> Filter</button>
+            </div>
+            {% if start_date or end_date %}
+            <div class="col-md-2">
+                <label class="form-label mb-1 small">&nbsp;</label>
+                <a href="{{ url_for('quotations') }}" class="btn btn-outline-secondary w-100">Clear</a>
+            </div>
+            {% endif %}
+            <div class="col-md-2">
+                <label class="form-label mb-1 small">Search</label>
+                <input type="text" class="form-control" id="quotationsSearch"
+                       placeholder="Customer, quotation #..." oninput="filterTable('quotationsSearch','quotationsTable')">
+            </div>
+        </form>
+    </div>
+</div>
+
+{% if quotations %}
+<div class="table-responsive">
+    <table class="table table-hover" id="quotationsTable">
+        <thead class="table-dark">
+            <tr>
+                <th>Quotation #</th>
+                <th>Date</th>
+                <th>Customer</th>
+                <th class="text-end">Total ({{ currency }})</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for q in quotations %}
+            <tr>
+                <td><strong>Q-{{ "%04d"|format(q.quotation_id) }}</strong></td>
+                <td>{{ q.created_at.strftime('%Y-%m-%d %H:%M') if q.created_at else '-' }}</td>
+                <td>
+                    {% if q.customer %}
+                    <a href="{{ url_for('customer_detail', customer_id=q.customer.customer_id) }}">{{ q.customer.name }}</a>
+                    {% else %}
+                    <span class="text-muted">Walk-in</span>
+                    {% endif %}
+                </td>
+                <td class="text-end fw-bold">{{ "{:,.2f}".format(q.total) }}</td>
+                <td>
+                    {% if q.status == 'converted' %}
+                    <span class="badge bg-success">Converted</span>
+                    {% else %}
+                    <span class="badge bg-secondary">Open</span>
+                    {% endif %}
+                </td>
+                <td class="text-nowrap">
+                    <a href="{{ url_for('quotation_view', quotation_id=q.quotation_id) }}"
+                       class="btn btn-sm btn-outline-primary"><i class="bi bi-printer"></i> View</a>
+                    {% if q.status == 'converted' and q.converted_invoice_id %}
+                    <a href="{{ url_for('invoice_detail', invoice_id=q.converted_invoice_id) }}"
+                       class="btn btn-sm btn-outline-success"><i class="bi bi-receipt"></i> Sale</a>
+                    {% else %}
+                    <a href="{{ url_for('quotation_convert', quotation_id=q.quotation_id) }}"
+                       class="btn btn-sm btn-outline-success"><i class="bi bi-arrow-repeat"></i> Convert to Sale</a>
+                    <button class="btn btn-sm btn-outline-danger delete-quotation-btn"
+                            data-quotation-id="{{ q.quotation_id }}" data-quotation-label="Q-{{ '%04d'|format(q.quotation_id) }}">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">No quotations yet. Build a cart in <a href="{{ url_for('invoice_create') }}">New Sale</a>, switch on Quotation Mode, and print one.</div>
+{% endif %}
+
+<form id="deleteQuotationForm" method="POST" style="display:none"></form>
+
+<script>
+document.querySelectorAll('.delete-quotation-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const qid = this.getAttribute('data-quotation-id');
+        const label = this.getAttribute('data-quotation-label');
+        if (!confirm(`Delete quotation ${label}? This cannot be undone.`)) return;
+        const form = document.getElementById('deleteQuotationForm');
+        form.action = '/quotations/' + qid + '/delete';
+        form.submit();
+    });
+});
+</script>
+{% endblock %}

@@ -328,6 +328,48 @@ def init_workbook():
                     FOREIGN KEY (partner_id) REFERENCES partners(partner_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS quotations (
+                    quotation_id         INT AUTO_INCREMENT PRIMARY KEY,
+                    tenant_id            INT,
+                    created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    customer_id          INT,
+                    subtotal             DECIMAL(12,2),
+                    discount_total       DECIMAL(12,2),
+                    tax_rate             DECIMAL(6,4),
+                    tax_amount           DECIMAL(12,2),
+                    delivery_charges     DECIMAL(12,2) DEFAULT 0,
+                    total                DECIMAL(12,2),
+                    status               VARCHAR(20) DEFAULT 'open',
+                    converted_invoice_id INT,
+                    created_by           VARCHAR(100),
+                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS quotation_items (
+                    item_id         INT AUTO_INCREMENT PRIMARY KEY,
+                    tenant_id       INT,
+                    quotation_id    INT NOT NULL,
+                    product_id      INT,
+                    product_name    VARCHAR(255),
+                    `manual`        TINYINT(1) DEFAULT 0,
+                    quantity        INT,
+                    unit_price      DECIMAL(12,2),
+                    discount_amount DECIMAL(12,2),
+                    line_total      DECIMAL(12,2),
+                    batch_id        INT,
+                    FOREIGN KEY (quotation_id) REFERENCES quotations(quotation_id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            try:
+                cur.execute("CREATE INDEX idx_quotations_tenant ON quotations (tenant_id)")
+            except Exception:
+                pass  # index already exists
+            try:
+                cur.execute("CREATE INDEX idx_quotation_items_tenant_quotation ON quotation_items (tenant_id, quotation_id)")
+            except Exception:
+                pass  # index already exists
 
             # Multi-tenant: every data table carries the owning tenant_id.
             for _tbl in ("products", "customers", "invoices", "invoice_items",
@@ -931,6 +973,95 @@ def delete_invoice(invoice_id, deleted_by, reason=""):
                    WHERE invoice_id = %s AND tenant_id = %s""",
                 (_dt.now(), deleted_by, reason, iid, tid)
             )
+
+
+def save_quotation(items, subtotal, discount_total, tax_rate, tax_amount,
+                    delivery_charges, total, customer_id=None, created_by="system"):
+    """Persist a printed quotation and its line items. items: list of dicts with
+    keys product_id (None if manual), product_name, manual (bool), quantity,
+    unit_price, discount_amount (total discount for the line), line_total,
+    batch_id (optional). Returns the new quotation_id."""
+    cid = normalize_customer_id(customer_id)
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO quotations
+                    (tenant_id, customer_id, subtotal, discount_total, tax_rate,
+                     tax_amount, delivery_charges, total, status, created_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'open',%s)
+            """, (tid, cid, round(subtotal, 2), round(discount_total, 2), tax_rate,
+                  round(tax_amount, 2), round(delivery_charges, 2), round(total, 2), created_by))
+            qid = cur.lastrowid
+            for item in items:
+                qty = int(item["quantity"])
+                cur.execute("""
+                    INSERT INTO quotation_items
+                        (tenant_id, quotation_id, product_id, product_name, `manual`,
+                         quantity, unit_price, discount_amount, line_total, batch_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (tid, qid, item.get("product_id"), item.get("product_name"),
+                      bool(item.get("manual")), qty, float(item.get("unit_price") or 0),
+                      round(float(item.get("discount_amount") or 0), 2),
+                      round(float(item.get("line_total") or 0), 2), item.get("batch_id")))
+    return qid
+
+
+def get_all_quotations(start_date=None, end_date=None):
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            q = "SELECT * FROM quotations WHERE tenant_id=%s"
+            params = [tid]
+            if start_date:
+                q += " AND DATE(created_at) >= %s"
+                params.append(start_date)
+            if end_date:
+                q += " AND DATE(created_at) <= %s"
+                params.append(end_date)
+            q += " ORDER BY quotation_id DESC"
+            cur.execute(q, params)
+            return cur.fetchall()
+
+
+def get_quotation(quotation_id):
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM quotations WHERE quotation_id=%s AND tenant_id=%s",
+                        (int(quotation_id), tid))
+            return cur.fetchone()
+
+
+def get_quotation_items(quotation_id):
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM quotation_items WHERE quotation_id=%s AND tenant_id=%s",
+                        (int(quotation_id), tid))
+            return cur.fetchall()
+
+
+def mark_quotation_converted(quotation_id, invoice_id):
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE quotations SET status='converted', converted_invoice_id=%s WHERE quotation_id=%s AND tenant_id=%s",
+                (int(invoice_id), int(quotation_id), tid)
+            )
+
+
+def delete_quotation(quotation_id):
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM quotations WHERE quotation_id=%s AND tenant_id=%s",
+                        (int(quotation_id), tid))
+            if not cur.fetchone():
+                raise ValueError("Quotation not found.")
+            cur.execute("DELETE FROM quotations WHERE quotation_id=%s AND tenant_id=%s",
+                        (int(quotation_id), tid))
 
 
 def get_invoice_items(invoice_id):

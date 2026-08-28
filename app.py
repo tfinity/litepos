@@ -591,13 +591,112 @@ def invoice_create():
                 customer_id=data.get("customer_id"),
                 delivery_charges=float(data.get("delivery_charges") or 0),
             )
+            quotation_id = data.get("quotation_id")
+            if quotation_id:
+                try:
+                    excel_db.mark_quotation_converted(quotation_id, invoice_id)
+                except Exception:
+                    pass  # sale already went through; the link-back is best-effort
             return jsonify({"invoice_id": invoice_id})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+
     products = excel_db.get_all_products()
     products = [p for p in products if int(p["quantity"]) > 0]
+
+    prefill_cart = None
+    prefill_warnings = []
+    prefill_customer = None
+    prefill_quotation_id = None
+    from_quotation_id = request.args.get("from_quotation")
+    if from_quotation_id:
+        quotation = excel_db.get_quotation(from_quotation_id)
+        if not quotation:
+            flash("Quotation not found.", "danger")
+        elif quotation.get("status") == "converted":
+            flash("This quotation was already converted to a sale.", "warning")
+        else:
+            cart = []
+            for it in excel_db.get_quotation_items(from_quotation_id):
+                if it.get("manual"):
+                    prefill_warnings.append(
+                        f"\"{it['product_name']}\" was a custom item on the quotation and "
+                        "can't be sold directly — add it to the cart manually if still needed.")
+                    continue
+                pid = it.get("product_id")
+                product = excel_db.get_product(pid) if pid else None
+                if not product:
+                    prefill_warnings.append(f"\"{it['product_name']}\" no longer exists in the catalog and was left out.")
+                    continue
+                current_stock = int(product["quantity"] or 0)
+                if current_stock <= 0:
+                    prefill_warnings.append(f"\"{product['name']}\" is out of stock and was left out.")
+                    continue
+
+                qty = int(it["quantity"])
+                if qty > current_stock:
+                    prefill_warnings.append(
+                        f"\"{product['name']}\": quoted qty {qty} reduced to {current_stock} (available stock).")
+                    qty = current_stock
+
+                batch_id = it.get("batch_id")
+                batch_label = None
+                if batch_id:
+                    batches = excel_db.get_product_batches(product_id=pid, active_only=True)
+                    match = next((b for b in batches
+                                  if int(b["batch_id"]) == int(batch_id) and int(b["qty_remaining"] or 0) >= qty), None)
+                    if match:
+                        exp = f", exp {match['expiry_date']}" if match.get("expiry_date") else ""
+                        batch_label = f"{match.get('batch_number') or ('#' + str(match['batch_id']))} — qty {match['qty_remaining']}{exp}"
+                    else:
+                        batch_id = None
+                        prefill_warnings.append(
+                            f"\"{product['name']}\": original batch no longer available — will auto-pick a batch at sale time.")
+
+                unit_price = float(it["unit_price"])
+                discount_total_item = float(it.get("discount_amount") or 0)
+                discount_per_unit = round(discount_total_item / qty, 2) if qty else 0
+                purchase_price = float(product["purchase_price"] or 0)
+                if unit_price - discount_per_unit < purchase_price:
+                    prefill_warnings.append(
+                        f"\"{product['name']}\": quoted price is now below cost — adjust it before completing the sale.")
+
+                cart.append({
+                    "product_id": pid,
+                    "product_name": product["name"],
+                    "list_counter": float(product["counter_price"] or 0),
+                    "unit_price": unit_price,
+                    "purchase_price": purchase_price,
+                    "mrp": float(product.get("retail_price") or 0),
+                    "quantity": qty,
+                    "discount_per_unit": discount_per_unit,
+                    "discount_total": round(discount_per_unit * qty, 2),
+                    "line_total": round((unit_price - discount_per_unit) * qty, 2),
+                    "max_stock": current_stock,
+                    "batch_id": batch_id,
+                    "batch_label": batch_label,
+                })
+            if cart:
+                prefill_cart = cart
+                prefill_quotation_id = int(from_quotation_id)
+                cid = excel_db.normalize_customer_id(quotation.get("customer_id"))
+                if cid is not None:
+                    c = excel_db.customer_lookup().get(cid)
+                    if c:
+                        prefill_customer = {
+                            "customer_id": c["customer_id"],
+                            "name": c["name"],
+                            "phone": c.get("phone") or "",
+                            "email": c.get("email") or "",
+                        }
+
+    import json as _json
     return render_template("invoice_create.html",
-                           products=products, tax_rate=TAX_RATE)
+                           products=products, tax_rate=TAX_RATE,
+                           prefill_cart_json=_json.dumps(prefill_cart) if prefill_cart else None,
+                           prefill_warnings=prefill_warnings,
+                           prefill_customer_json=_json.dumps(prefill_customer) if prefill_customer else None,
+                           prefill_quotation_id=prefill_quotation_id)
 
 
 @app.route("/invoices/<int:invoice_id>")
@@ -672,7 +771,10 @@ def quotation_preview():
     for item in cart_items:
         qty = int(item["quantity"])
         discount_per_unit = float(item.get("discount_amount", 0))
-        if item.get("manual"):
+        manual = bool(item.get("manual"))
+        pid = None
+        batch_id = None
+        if manual:
             name = (item.get("product_name") or "").strip()
             if not name:
                 return "Custom item needs a description.", 400
@@ -684,6 +786,7 @@ def quotation_preview():
                 return f"Product {pid} not found.", 400
             name = product["name"]
             unit_price = float(item.get("unit_price") or product["counter_price"])
+            batch_id = item.get("batch_id")
         if qty <= 0:
             return "Invalid quantity.", 400
         if unit_price < 0:
@@ -691,7 +794,10 @@ def quotation_preview():
         line_discount = discount_per_unit * qty
         line_total = (unit_price - discount_per_unit) * qty
         line_items.append({
+            "product_id": pid,
             "product_name": name,
+            "manual": manual,
+            "batch_id": batch_id,
             "quantity": qty,
             "counter_price": unit_price,
             "discount_amount": line_discount,
@@ -705,10 +811,23 @@ def quotation_preview():
     tax_amount = round(net * TAX_RATE, 2)
     total = round(net + tax_amount + delivery_charges, 2)
 
+    quotation_id = excel_db.save_quotation(
+        items=[{**li, "unit_price": li["counter_price"]} for li in line_items],
+        subtotal=subtotal,
+        discount_total=discount_total,
+        tax_rate=TAX_RATE,
+        tax_amount=tax_amount,
+        delivery_charges=delivery_charges,
+        total=total,
+        customer_id=cid,
+        created_by=current_user.username,
+    )
+
     from datetime import datetime as _dt
     return render_template(
         "quotation_receipt.html",
         items=line_items,
+        quotation_id=quotation_id,
         subtotal=round(subtotal, 2),
         delivery_charges=round(delivery_charges, 2),
         discount_total=round(discount_total, 2),
@@ -722,6 +841,96 @@ def quotation_preview():
         business_phone=BUSINESS_PHONE,
         receipt_footer=RECEIPT_FOOTER,
     )
+
+
+@app.route("/quotations")
+@login_required
+def quotations():
+    start_str = request.args.get("start", "").strip()
+    end_str = request.args.get("end", "").strip()
+    start_date = end_date = None
+    try:
+        if start_str:
+            start_date = date.fromisoformat(start_str)
+        if end_str:
+            end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = end_date = None
+    rows = excel_db.get_all_quotations(start_date=start_date, end_date=end_date)
+    cmap = excel_db.customer_lookup()
+    for q in rows:
+        cid = excel_db.normalize_customer_id(q.get("customer_id"))
+        q["customer"] = cmap.get(cid) if cid is not None else None
+    return render_template("quotations.html", quotations=rows,
+                           start_date=start_date, end_date=end_date)
+
+
+@app.route("/quotations/<int:quotation_id>")
+@login_required
+def quotation_view(quotation_id):
+    quotation = excel_db.get_quotation(quotation_id)
+    if not quotation:
+        flash("Quotation not found.", "danger")
+        return redirect(url_for("quotations"))
+    items = excel_db.get_quotation_items(quotation_id)
+    line_items = [{
+        "product_id": it.get("product_id"),
+        "product_name": it["product_name"],
+        "manual": bool(it.get("manual")),
+        "batch_id": it.get("batch_id"),
+        "quantity": int(it["quantity"]),
+        "counter_price": float(it["unit_price"]),
+        "discount_amount": float(it["discount_amount"] or 0),
+        "line_total": float(it["line_total"]),
+    } for it in items]
+    customer = None
+    cid = excel_db.normalize_customer_id(quotation.get("customer_id"))
+    if cid is not None:
+        cmap = excel_db.customer_lookup()
+        customer = cmap.get(cid)
+    return render_template(
+        "quotation_receipt.html",
+        items=line_items,
+        quotation_id=quotation["quotation_id"],
+        subtotal=float(quotation["subtotal"]),
+        delivery_charges=float(quotation.get("delivery_charges") or 0),
+        discount_total=float(quotation["discount_total"]),
+        tax_rate=float(quotation["tax_rate"] or 0),
+        tax_amount=float(quotation["tax_amount"]),
+        total=float(quotation["total"]),
+        customer=customer,
+        generated_at=quotation["created_at"],
+        business_name=BUSINESS_NAME,
+        business_address=BUSINESS_ADDRESS,
+        business_phone=BUSINESS_PHONE,
+        receipt_footer=RECEIPT_FOOTER,
+    )
+
+
+@app.route("/quotations/<int:quotation_id>/delete", methods=["POST"])
+@login_required
+def quotation_delete(quotation_id):
+    try:
+        excel_db.delete_quotation(quotation_id)
+        flash("Quotation deleted.", "success")
+    except ValueError as e:
+        flash(str(e), "danger")
+    return redirect(url_for("quotations"))
+
+
+@app.route("/quotations/<int:quotation_id>/convert")
+@login_required
+def quotation_convert(quotation_id):
+    quotation = excel_db.get_quotation(quotation_id)
+    if not quotation:
+        flash("Quotation not found.", "danger")
+        return redirect(url_for("quotations"))
+    if quotation.get("status") == "converted":
+        flash("This quotation was already converted to a sale.", "warning")
+        if quotation.get("converted_invoice_id"):
+            return redirect(url_for("invoice_detail", invoice_id=quotation["converted_invoice_id"]))
+        return redirect(url_for("quotations"))
+    return redirect(url_for("invoice_create", from_quotation=quotation_id))
 
 
 @app.route("/invoices/<int:invoice_id>/edit", methods=["GET", "POST"])

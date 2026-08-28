@@ -9,6 +9,24 @@
     </div>
 </div>
 
+{% if prefill_quotation_id %}
+<div class="alert alert-info">
+    <i class="bi bi-arrow-repeat"></i> Cart pre-filled from
+    <a href="{{ url_for('quotation_view', quotation_id=prefill_quotation_id) }}">Quotation Q-{{ "%04d"|format(prefill_quotation_id) }}</a>.
+    Review before completing the sale.
+</div>
+{% endif %}
+{% if prefill_warnings %}
+<div class="alert alert-warning">
+    <strong><i class="bi bi-exclamation-triangle"></i> Some items needed adjustment:</strong>
+    <ul class="mb-0">
+        {% for w in prefill_warnings %}
+        <li>{{ w }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
 <div class="card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
         <h5 class="mb-0">Customer (optional)</h5>
@@ -260,6 +278,7 @@ let searchTimeout = null;
 let customerSearchTimeout = null;
 let quotationMode = false;
 let showCost = false;
+let sourceQuotationId = {{ prefill_quotation_id or 'null' }};
 
 function toggleCost() {
     showCost = !showCost;
@@ -839,6 +858,7 @@ function submitInvoice() {
         const n = parseInt(cidRaw, 10);
         if (Number.isFinite(n)) payload.customer_id = n;
     }
+    if (sourceQuotationId) payload.quotation_id = sourceQuotationId;
 
     document.getElementById('submitBtn').disabled = true;
     document.getElementById('submitBtn').innerHTML = '<i class="bi bi-hourglass"></i> Processing...';
@@ -864,5 +884,13 @@ function submitInvoice() {
         document.getElementById('submitBtn').innerHTML = '<i class="bi bi-check-circle"></i> Complete Sale';
     });
 }
+
+{% if prefill_cart_json %}
+cart = {{ prefill_cart_json|safe }};
+renderCart();
+{% endif %}
+{% if prefill_customer_json %}
+selectCustomer({{ prefill_customer_json|safe }});
+{% endif %}
 </script>
 {% endblock %}
