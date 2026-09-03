@@ -8,6 +8,9 @@ __pycache__/
 *.pyo
 .env
 
+# Runtime logs
+logs/
+
 # IDE
 .vscode/
 .idea/

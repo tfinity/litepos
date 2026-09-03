@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import datetime, date, timedelta
 import re
+import time
 
 import pymysql
 import pymysql.cursors
@@ -37,18 +38,38 @@ CHART_OF_ACCOUNTS = [
 _DEBIT_NORMAL_TYPES = ("asset", "expense")
 
 
+def _connect():
+    """One retry with a short backoff for connection-level failures only (e.g. a
+    brief blip while MySQL restarts after a routine package/security update) --
+    doesn't touch query-level errors, and won't paper over a sustained outage."""
+    try:
+        return pymysql.connect(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DATABASE,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False,
+        )
+    except pymysql.err.OperationalError:
+        time.sleep(0.4)
+        return pymysql.connect(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DATABASE,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False,
+        )
+
+
 @contextmanager
 def _conn():
-    conn = pymysql.connect(
-        host=MYSQL_HOST,
-        port=MYSQL_PORT,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DATABASE,
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=False,
-    )
+    conn = _connect()
     try:
         yield conn
         conn.commit()

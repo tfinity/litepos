@@ -1,8 +1,11 @@
 """Flask POS Application - Point of Sale System."""
 
+import logging
 import os
 from datetime import date
 from functools import wraps
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,6 +38,44 @@ CURRENCY = os.environ.get("CURRENCY", "USD")
 RECEIPT_FOOTER = os.environ.get("RECEIPT_FOOTER", "")
 
 excel_db.init_workbook()
+
+# ── Error logging ────────────────────────────────────────────────────
+# Durable record of every unhandled 500, independent of journald retention --
+# a `journalctl -u pos` traceback can scroll out of the journal by the time
+# anyone goes looking for it.
+_LOG_DIR = Path(__file__).parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_error_file_handler = RotatingFileHandler(
+    _LOG_DIR / "app_errors.log", maxBytes=2_000_000, backupCount=5,
+)
+_error_file_handler.setLevel(logging.ERROR)
+_error_file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(message)s"
+))
+app.logger.addHandler(_error_file_handler)
+app.logger.setLevel(logging.INFO)
+
+
+@app.errorhandler(500)
+def handle_500(e):
+    """Log the full traceback with request context, then show a plain, DB-free
+    page instead of Flask's bare 'Internal Server Error' -- this must not
+    itself touch the database (that may be exactly why we're here) or extend
+    base.html (its nav depends on current_user, which can re-trigger the same
+    DB failure)."""
+    try:
+        who = current_user.username if current_user.is_authenticated else "anonymous"
+    except Exception:
+        who = "unknown"
+    app.logger.error(
+        "Unhandled exception on %s %s (user=%s)",
+        request.method, request.path, who, exc_info=True,
+    )
+    try:
+        return render_template("error_500.html", business_name=BUSINESS_NAME), 500
+    except Exception:
+        return "Something went wrong on our end. Please try again in a moment.", 500
+
 
 # ── Auth ──────────────────────────────────────────────────────────────
 
