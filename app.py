@@ -42,17 +42,32 @@ excel_db.init_workbook()
 # ── Error logging ────────────────────────────────────────────────────
 # Durable record of every unhandled 500, independent of journald retention --
 # a `journalctl -u pos` traceback can scroll out of the journal by the time
-# anyone goes looking for it.
-_LOG_DIR = Path(__file__).parent / "logs"
-_LOG_DIR.mkdir(exist_ok=True)
-_error_file_handler = RotatingFileHandler(
-    _LOG_DIR / "app_errors.log", maxBytes=2_000_000, backupCount=5,
-)
-_error_file_handler.setLevel(logging.ERROR)
-_error_file_handler.setFormatter(logging.Formatter(
-    "%(asctime)s %(levelname)s %(message)s"
-))
-app.logger.addHandler(_error_file_handler)
+# anyone goes looking for it. Must never be able to crash the app: a
+# directory-creation permission problem here previously took the whole
+# service down at import time (every gunicorn worker failed to boot), so
+# this tries a couple of locations and, failing that, just does without --
+# it never lets a filesystem/permission issue stop the app from starting.
+def _setup_error_log_handler():
+    for candidate in (Path(__file__).parent / "logs", Path("/tmp/pos_app_logs")):
+        try:
+            candidate.mkdir(exist_ok=True, parents=True)
+            handler = RotatingFileHandler(
+                candidate / "app_errors.log", maxBytes=2_000_000, backupCount=5,
+            )
+            handler.setLevel(logging.ERROR)
+            handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            return handler
+        except OSError:
+            continue
+    return None
+
+
+_error_file_handler = _setup_error_log_handler()
+if _error_file_handler is not None:
+    app.logger.addHandler(_error_file_handler)
+else:
+    app.logger.warning("Could not set up a writable error log file (tried app dir and /tmp); "
+                       "falling back to default logging only.")
 app.logger.setLevel(logging.INFO)
 
 
