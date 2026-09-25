@@ -2800,6 +2800,71 @@ def search_product_sales(product_query, start_date, end_date):
     return rows
 
 
+def search_product_purchases(product_query, start_date, end_date):
+    """Return all purchase-invoice lines whose product_name contains product_query
+    (case-insensitive) within the given date range. Includes supplier name and
+    purchase metadata -- lets staff find which supplier(s) a product came from."""
+    q = (product_query or "").strip().lower()
+    start = start_date if isinstance(start_date, date) else date.fromisoformat(str(start_date))
+    end = end_date if isinstance(end_date, date) else date.fromisoformat(str(end_date))
+
+    # Build purchase lookup with date + payment_method + supplier_id
+    purch_meta = {}
+    for p in get_all_purchase_invoices():
+        created = p.get("created_at")
+        if isinstance(created, datetime):
+            p_date = created.date()
+        elif isinstance(created, date):
+            p_date = created
+        else:
+            continue
+        if start <= p_date <= end:
+            purch_meta[int(p["purchase_id"])] = {
+                "date": p_date,
+                "payment_method": p.get("payment_method"),
+                "supplier_id": p.get("supplier_id"),
+            }
+
+    if not purch_meta:
+        return []
+
+    smap = supplier_lookup()
+
+    with _lock:
+        wb = _open()
+        ws = wb["PurchaseItems"]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(PURCHASE_ITEM_HEADERS, row)
+            pid = int(item["purchase_id"])
+            if pid not in purch_meta:
+                continue
+            pname = (item.get("product_name") or "").lower()
+            if q and q not in pname:
+                continue
+            meta = purch_meta[pid]
+            supplier = smap.get(int(meta["supplier_id"])) if meta.get("supplier_id") else None
+            qty = int(item.get("quantity") or 0)
+            line_total = float(item.get("line_total") or 0)
+            rows.append({
+                "date": meta["date"],
+                "purchase_id": pid,
+                "payment_method": meta["payment_method"],
+                "supplier_id": meta.get("supplier_id"),
+                "supplier_name": supplier["name"] if supplier else None,
+                "product_name": item.get("product_name"),
+                "quantity": qty,
+                "unit_cost": float(item.get("unit_cost") or 0),
+                "line_total": line_total,
+            })
+        wb.close()
+
+    rows.sort(key=lambda x: (x["date"], x["purchase_id"]), reverse=True)
+    return rows
+
+
 def _empty_pl_totals():
     zero = {"revenue": 0, "cogs": 0, "profit": 0}
     return {"revenue": 0, "cogs": 0, "profit": 0,

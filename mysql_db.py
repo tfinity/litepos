@@ -2166,6 +2166,29 @@ def search_product_sales(product_query, start_date, end_date):
             return cur.fetchall()
 
 
+def search_product_purchases(product_query, start_date, end_date):
+    """Return purchase-invoice lines whose product_name contains product_query
+    within the date range, with supplier name -- lets staff find which
+    supplier(s) a product came from."""
+    q = f"%{(product_query or '').strip()}%"
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DATE(p.created_at) AS date,
+                       p.purchase_id, p.payment_method,
+                       p.supplier_id, s.name AS supplier_name,
+                       pi.product_name, pi.quantity, pi.unit_cost, pi.line_total
+                FROM purchase_invoice_items pi
+                JOIN purchase_invoices p ON p.purchase_id = pi.purchase_id AND p.tenant_id = pi.tenant_id
+                LEFT JOIN suppliers s ON s.supplier_id = p.supplier_id AND s.tenant_id = p.tenant_id
+                WHERE pi.tenant_id = %s
+                  AND DATE(p.created_at) BETWEEN %s AND %s
+                  AND pi.product_name LIKE %s
+                ORDER BY p.created_at DESC, p.purchase_id DESC
+            """, (_tid(), start_date, end_date, q))
+            return cur.fetchall()
+
+
 def get_supplier_sales_pl(supplier_id, start_date, end_date):
     """Sales P&L for units actually sourced from a given supplier. Each line
     is attributed by the batch it was sold from (batch.supplier_id) — exact,

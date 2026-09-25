@@ -1632,6 +1632,39 @@ def purchases_list():
     return render_template("purchases.html", purchases=purchases)
 
 
+@app.route("/purchases/product-search")
+@login_required
+def purchase_product_search():
+    today = date.today()
+    start_str = request.args.get("start", today.replace(day=1).isoformat())
+    end_str = request.args.get("end", today.isoformat())
+    product_query = request.args.get("product", "").strip()
+    try:
+        start_date = date.fromisoformat(start_str)
+        end_date = date.fromisoformat(end_str)
+    except ValueError:
+        start_date = today.replace(day=1)
+        end_date = today
+    rows = []
+    totals = {"qty": 0, "cost": 0.0, "purchase_ids": set(), "supplier_ids": set()}
+    if product_query:
+        rows = excel_db.search_product_purchases(product_query, start_date, end_date)
+        for r in rows:
+            totals["qty"] += int(r.get("quantity") or 0)
+            totals["cost"] += float(r.get("line_total") or 0)
+            totals["purchase_ids"].add(r["purchase_id"])
+            if r.get("supplier_id"):
+                totals["supplier_ids"].add(r["supplier_id"])
+    totals["cost"] = round(totals["cost"], 2)
+    totals["purchase_count"] = len(totals["purchase_ids"])
+    totals["supplier_count"] = len(totals["supplier_ids"])
+    products = excel_db.get_all_products()
+    return render_template("purchase_product_search.html",
+                           rows=rows, totals=totals,
+                           start_date=start_date, end_date=end_date,
+                           product_query=product_query, products=products)
+
+
 @app.route("/purchases/create", methods=["GET", "POST"])
 @login_required
 def purchase_create():

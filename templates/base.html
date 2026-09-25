@@ -160,6 +160,9 @@
                     <a class="nav-link {{ 'active' if request.endpoint == 'purchases_list' }}" href="{{ url_for('purchases_list') }}">
                         <i class="bi bi-bag-plus"></i> Purchases
                     </a>
+                    <a class="nav-link {{ 'active' if request.endpoint == 'purchase_product_search' }}" href="{{ url_for('purchase_product_search') }}">
+                        <i class="bi bi-search"></i> Search Purchases by Product
+                    </a>
 
                     <div class="nav-section">Accounting</div>
                     <a class="nav-link {{ 'active' if request.endpoint == 'expenses' }}" href="{{ url_for('expenses') }}">
