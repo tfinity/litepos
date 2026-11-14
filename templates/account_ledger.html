@@ -77,7 +77,7 @@
             </tr>
         </thead>
         <tbody>
-            {% for r in ledger.rows %}
+            {% for r in ledger.rows|reverse %}
             <tr>
                 <td>{{ r.date.strftime('%Y-%m-%d') if r.date else '—' }}</td>
                 <td>{{ r.description or '—' }}</td>
