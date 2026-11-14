@@ -1417,6 +1417,31 @@ def create_invoice(items, tax_rate, payment_method, customer_id=None, delivery_c
     return invoice_id
 
 
+def _delete_sale_journal_entry(wb, invoice_id):
+    """Remove the auto-synced journal entry (+ lines) for one sale so the next
+    sync_journal_from_operations() re-posts it from the invoice's current data."""
+    if "JournalEntries" not in wb.sheetnames:
+        return
+    ws_je = wb["JournalEntries"]
+    del_eids = set()
+    del_rows = []
+    for idx, row in enumerate(ws_je.iter_rows(min_row=2), start=2):
+        if row[0].value is None:
+            continue
+        if row[3].value == "sale" and row[4].value is not None \
+                and int(row[4].value) == int(invoice_id):
+            del_eids.add(int(row[0].value))
+            del_rows.append(idx)
+    for idx in sorted(del_rows, reverse=True):
+        ws_je.delete_rows(idx, 1)
+    if del_eids and "JournalLines" in wb.sheetnames:
+        ws_jl = wb["JournalLines"]
+        del_lines = [idx for idx, row in enumerate(ws_jl.iter_rows(min_row=2), start=2)
+                     if row[0].value is not None and int(row[1].value) in del_eids]
+        for idx in sorted(del_lines, reverse=True):
+            ws_jl.delete_rows(idx, 1)
+
+
 def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id=None):
     """
     Edit an existing invoice in-place.
@@ -1528,7 +1553,10 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
 
         net = round(subtotal - discount_total, 2)
         tax_amount = round(net * tax_rate, 2)
-        total = round(net + tax_amount, 2)
+        # The edit screen doesn't change delivery charges, so keep what the
+        # invoice already has -- dropping it here left total != the journal.
+        delivery = round(float(invoice.get("delivery_charges") or 0), 2)
+        total = round(net + tax_amount + delivery, 2)
 
         # Delete old item rows (reverse order)
         for idx in sorted(old_item_indices, reverse=True):
@@ -1562,6 +1590,11 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
         inv_row_ref[6].value = total
         inv_row_ref[7].value = new_payment
         inv_row_ref[8].value = new_cid
+
+        # Drop the auto-synced journal entry for this sale. sync_journal_from_operations()
+        # only posts invoices that have no entry yet, so without this the books keep
+        # the pre-edit amounts forever. The next accounting view re-posts it.
+        _delete_sale_journal_entry(wb, int(invoice_id))
 
         # Reconcile credit ledger:
         # Remove any existing debit entry for this invoice (regardless of old customer)
@@ -4023,6 +4056,23 @@ def count_operational_before(start_date):
 
 
 _AUTO_SYNCED_SOURCES = ("sale", "purchase", "supplier_payment", "customer_payment")
+
+
+def clear_sale_journal_entries():
+    """Delete every auto-synced sale entry (+ lines). They're derived data:
+    sync_journal_from_operations() re-posts them from the invoices. Used by
+    scripts/repair_sale_journal.py to fix books that went stale when invoices
+    were edited before update_invoice dropped the old entry. Returns count removed."""
+    with _lock:
+        wb = _open()
+        before = 0
+        if "JournalEntries" in wb.sheetnames:
+            before = sum(1 for r in wb["JournalEntries"].iter_rows(min_row=2)
+                         if r[0].value is not None and r[3].value == "sale")
+        _delete_opening_entries(wb, ("sale",))
+        _save(wb)
+        wb.close()
+    return before
 
 
 def _delete_opening_entries(wb, source_types=("opening",)):

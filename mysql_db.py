@@ -1266,7 +1266,10 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
 
             net = round(subtotal - discount_total, 2)
             tax_amount = round(net * tax_rate, 2)
-            total = round(net + tax_amount, 2)
+            # The edit screen doesn't change delivery charges, so keep what the
+            # invoice already has -- dropping it here left total != the journal.
+            delivery = round(float(invoice.get("delivery_charges") or 0), 2)
+            total = round(net + tax_amount + delivery, 2)
 
             cur.execute("DELETE FROM invoice_items WHERE invoice_id = %s AND tenant_id = %s", (iid, tid))
             for pid, pname, pp, up, qty, ld, lt, batch_id in line_entries:
@@ -1281,6 +1284,14 @@ def update_invoice(invoice_id, items, tax_rate, payment_method=None, customer_id
                     tax_amount = %s, total = %s, payment_method = %s, customer_id = %s
                 WHERE invoice_id = %s AND tenant_id = %s
             """, (round(subtotal, 2), round(discount_total, 2), tax_rate, tax_amount, total, new_payment, new_cid, iid, tid))
+
+            # Drop the auto-synced journal entry for this sale (cascade clears its
+            # lines). sync_journal_from_operations() only posts invoices that have
+            # no entry yet, so without this the books keep the pre-edit amounts
+            # forever. The next accounting view re-posts it from the edited invoice.
+            cur.execute(
+                "DELETE FROM journal_entries WHERE source_type = 'sale' AND source_id = %s AND tenant_id = %s",
+                (iid, tid))
 
             # Reconcile ledger: delete old debit for this invoice, re-add if Credit
             cur.execute(
@@ -2858,6 +2869,18 @@ def clear_opening_balances():
                 """DELETE FROM journal_entries WHERE tenant_id = %s AND source_type IN
                    ('opening','sale','purchase','supplier_payment','customer_payment')""",
                 (_tid(),))
+
+
+def clear_sale_journal_entries():
+    """Delete every auto-synced sale entry for the current tenant (lines cascade).
+    They're derived data: sync_journal_from_operations() re-posts them from the
+    invoices. Used by scripts/repair_sale_journal.py to fix books that went stale
+    when invoices were edited before update_invoice dropped the old entry."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM journal_entries WHERE source_type = 'sale' AND tenant_id = %s",
+                        (_tid(),))
+            return cur.rowcount
 
 
 def _existing_journal_sources():
