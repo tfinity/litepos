@@ -68,6 +68,7 @@
                 <th>Expiry</th>
                 <th>Received At</th>
                 <th>Status</th>
+                <th></th>
             </tr>
         </thead>
         <tbody>
@@ -87,6 +88,18 @@
                     <span class="badge bg-success">Active</span>
                     {% endif %}
                 </td>
+                <td class="text-end">
+                    {% if b.qty_remaining > 0 %}
+                    <button type="button" class="btn btn-sm btn-outline-danger"
+                            data-bs-toggle="modal" data-bs-target="#adjustModal"
+                            data-action="{{ url_for('batch_adjust', product_id=product.product_id, batch_id=b.batch_id) }}"
+                            data-batch="{{ b.batch_number or ('#' ~ b.batch_id) }}"
+                            data-max="{{ b.qty_remaining }}"
+                            data-from-purchase="{{ 1 if b.purchase_id else 0 }}">
+                        <i class="bi bi-dash-circle"></i> Remove stock
+                    </button>
+                    {% endif %}
+                </td>
             </tr>
             {% endfor %}
         </tbody>
@@ -95,4 +108,106 @@
 {% else %}
 <div class="alert alert-info">No purchase batches recorded for this product yet.</div>
 {% endif %}
+
+<h5 class="mt-5 mb-3">Stock adjustment history</h5>
+{% if adjustments %}
+<div class="table-responsive">
+    <table class="table table-sm table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>Date</th>
+                <th>Batch</th>
+                <th class="text-end">Qty removed</th>
+                <th class="text-end">Value ({{ currency }})</th>
+                <th>Reason</th>
+                <th>Note</th>
+                <th>Done by</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in adjustments %}
+            <tr>
+                <td>{{ a.adjusted_at.strftime('%Y-%m-%d %H:%M') if a.adjusted_at else '—' }}</td>
+                <td>{{ a.batch_number or '—' }}</td>
+                <td class="text-end">{{ a.qty_removed }}</td>
+                <td class="text-end">{{ "{:,.2f}".format(a.total_value or 0) }}{% if not a.journal_entry_id %} <span class="text-muted small">(no book entry)</span>{% endif %}</td>
+                <td>{{ adjust_reasons.get(a.reason, a.reason) }}</td>
+                <td>{{ a.note or '—' }}</td>
+                <td class="fw-bold">{{ a.adjusted_by or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted">No stock has been removed manually from this product.</p>
+{% endif %}
+
+<div class="modal fade" id="adjustModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="POST" id="adjustForm" class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Remove stock — batch <span id="adjBatch"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Quantity to remove</label>
+                    <input type="number" name="qty" id="adjQty" class="form-control" min="1" required>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" name="remove_all" value="1" id="adjAll">
+                        <label class="form-check-label" for="adjAll">Remove the whole batch (<span id="adjMax"></span> units)</label>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Reason</label>
+                    <select name="reason" id="adjReason" class="form-select" required>
+                        <option value="">Select…</option>
+                        {% for key, label in adjust_reasons.items() %}
+                        <option value="{{ key }}">{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Note</label>
+                    <input type="text" name="note" class="form-control" maxlength="500" placeholder="Optional, required for Other">
+                </div>
+                <div class="form-text" id="adjHelp">
+                    The removed stock is booked as a Stock Write-off (an expense) and Inventory goes down by the same cost.
+                    This is recorded under your username and can't be edited afterwards.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-danger">Remove stock</button>
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+document.getElementById('adjustModal').addEventListener('show.bs.modal', function (ev) {
+    var b = ev.relatedTarget;
+    document.getElementById('adjustForm').action = b.dataset.action;
+    document.getElementById('adjBatch').textContent = b.dataset.batch;
+    document.getElementById('adjMax').textContent = b.dataset.max;
+    var q = document.getElementById('adjQty');
+    q.max = b.dataset.max; q.value = ''; q.disabled = false; q.required = true;
+    document.getElementById('adjAll').checked = false;
+    var r = document.getElementById('adjReason');
+    r.value = '';
+    // "Entered by mistake" isn't offered for purchase lots: fix the purchase instead.
+    Array.prototype.forEach.call(r.options, function (o) {
+        if (o.value === 'entered_by_mistake') { o.hidden = o.disabled = b.dataset.fromPurchase === '1'; }
+    });
+});
+document.getElementById('adjAll').addEventListener('change', function () {
+    var q = document.getElementById('adjQty');
+    q.disabled = this.checked; q.required = !this.checked;
+});
+document.getElementById('adjReason').addEventListener('change', function () {
+    document.getElementById('adjHelp').textContent = this.value === 'entered_by_mistake'
+        ? "Stock that was never really there: quantity is corrected with no write-off in the books. Still logged under your username."
+        : "The removed stock is booked as a Stock Write-off (an expense) and Inventory goes down by the same cost. This is recorded under your username and can't be edited afterwards.";
+});
+</script>
 {% endblock %}

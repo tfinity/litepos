@@ -47,7 +47,7 @@
                             <label class="form-label">{{ "Quantity in Stock" if product else "Opening Stock" }}</label>
                             <input type="number" name="quantity" class="form-control" min="0"
                                    value="{{ product.quantity if product else 0 }}"
-                                   {% if has_batches %}readonly title="Derived from batch stock — see the batches list below to adjust it"{% endif %}>
+                                   {% if has_batches %}readonly title="Derived from batch stock — use Remove stock on the product's detail page"{% endif %}>
                             {% if not product %}
                             <div class="form-text">
                                 Only stock you <strong>already have</strong>. New stock arriving from a
@@ -57,7 +57,9 @@
                             {% elif has_batches %}
                             <div class="form-text">
                                 This product has batch history, so stock is derived from its batches'
-                                remaining quantity and can't be typed in here directly.
+                                remaining quantity and can't be typed in here directly. To remove stock, open the
+                                <a href="{{ url_for('product_detail', product_id=product.product_id) }}">product's detail page</a>
+                                and use <strong>Remove stock</strong> on the batch.
                             </div>
                             {% endif %}
                         </div>

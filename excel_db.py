@@ -131,6 +131,11 @@ BATCH_HEADERS = [
     "batch_id", "product_id", "batch_number", "supplier_id", "purchase_id",
     "unit_cost", "qty_received", "qty_remaining", "expiry_date", "received_at",
 ]
+STOCK_ADJUSTMENT_HEADERS = [
+    "adjustment_id", "product_id", "product_name", "batch_id", "batch_number",
+    "qty_removed", "unit_cost", "total_value", "reason", "note",
+    "adjusted_by", "adjusted_at", "journal_entry_id",
+]
 QUOTATION_HEADERS = [
     "quotation_id", "created_at", "customer_id", "subtotal", "discount_total",
     "tax_rate", "tax_amount", "delivery_charges", "total",
@@ -178,6 +183,7 @@ CHART_OF_ACCOUNTS = [
     ("5200", "Salaries",            "expense",   False),
     ("5300", "Utilities",           "expense",   False),
     ("5400", "Transport",           "expense",   False),
+    ("5500", "Stock Write-off",     "expense",   True),
     ("5900", "Miscellaneous",       "expense",   False),
 ]
 _DEBIT_NORMAL_TYPES = ("asset", "expense")
@@ -298,6 +304,9 @@ def ensure_workbook_schema():
             changed = True
         if "ProductBatches" not in wb.sheetnames:
             wb.create_sheet("ProductBatches").append(BATCH_HEADERS)
+            changed = True
+        if "StockAdjustments" not in wb.sheetnames:
+            wb.create_sheet("StockAdjustments").append(STOCK_ADJUSTMENT_HEADERS)
             changed = True
         if "Quotations" not in wb.sheetnames:
             wb.create_sheet("Quotations").append(QUOTATION_HEADERS)
@@ -683,6 +692,138 @@ def get_product_batches(product_id=None, active_only=False):
         wb.close()
     batches.sort(key=lambda x: (x["received_at"] or datetime.min, x["batch_id"]))
     return batches
+
+
+# ── Manual stock adjustments (remove stock from a batch) ─────────────
+
+STOCK_ADJUST_REASONS = {
+    "damaged": "Damaged",
+    "expired": "Expired",
+    "count_correction": "Stock count correction",
+    "entered_by_mistake": "Entered by mistake",
+    "other": "Other (note required)",
+}
+
+
+def _sheet_batch_refs(wb, sheet, batch_id):
+    """True if any row in `sheet` has a batch_id column equal to batch_id."""
+    if sheet not in wb.sheetnames:
+        return False
+    ws = wb[sheet]
+    headers = [c.value for c in ws[1]]
+    if "batch_id" not in headers:
+        return False
+    idx = headers.index("batch_id")
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if idx < len(row) and row[idx] not in (None, "") and int(row[idx]) == batch_id:
+            return True
+    return False
+
+
+def adjust_batch_stock(batch_id, qty, reason, note="", adjusted_by="system"):
+    """Remove qty units from a batch, record who/when/why, and (except for
+    'entered_by_mistake') post Dr Stock Write-off / Cr Inventory for the cost.
+    A batch left empty with no purchase/sales/quotation links is deleted.
+    Returns {adjustment_id, total_value, batch_deleted, journal_entry_id}."""
+    reason = (reason or "").strip()
+    if reason not in STOCK_ADJUST_REASONS:
+        raise ValueError("Pick a reason.")
+    qty = _to_int(qty)
+    if qty <= 0:
+        raise ValueError("Enter a quantity greater than zero.")
+    note = (note or "").strip()[:500]
+    if reason == "other" and not note:
+        raise ValueError("Add a note explaining the reason.")
+    batch_id = int(batch_id)
+    seed_chart_of_accounts()
+    acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
+    _ensure_legacy_batches()
+    with _lock:
+        wb = _open()
+        try:
+            ws_b = wb["ProductBatches"]
+            target = None
+            for brow in ws_b.iter_rows(min_row=2):
+                if brow[0].value is not None and int(brow[0].value) == batch_id:
+                    target = brow
+                    break
+            if target is None:
+                raise ValueError("Batch not found.")
+            remaining = int(target[7].value or 0)
+            if qty > remaining:
+                raise ValueError(f"Only {remaining} left in this batch; can't remove {qty}.")
+            purchase_id = target[4].value
+            if reason == "entered_by_mistake" and purchase_id:
+                raise ValueError(
+                    f"This lot came from purchase PINV-{purchase_id}. Fix or delete that "
+                    "purchase instead so the supplier balance and books stay right.")
+            pid = int(target[1].value)
+            batch_number = target[2].value
+            unit_cost = float(target[5].value or 0)
+            total_value = round(qty * unit_cost, 2)
+            product_name = None
+            for prow in wb["Products"].iter_rows(min_row=2, values_only=True):
+                if prow[0] is not None and int(prow[0]) == pid:
+                    product_name = prow[1]
+                    break
+            new_remaining = remaining - qty
+            target[7].value = new_remaining
+            if reason == "entered_by_mistake":
+                target[6].value = max(0, int(target[6].value or 0) - qty)
+            batch_deleted = False
+            if new_remaining == 0 and not purchase_id:
+                if not (_sheet_batch_refs(wb, "InvoiceItems", batch_id)
+                        or _sheet_batch_refs(wb, "QuotationItems", batch_id)):
+                    ws_b.delete_rows(target[0].row)
+                    batch_deleted = True
+            _recompute_product_cache(wb, pid)
+            if "StockAdjustments" not in wb.sheetnames:
+                wb.create_sheet("StockAdjustments").append(STOCK_ADJUSTMENT_HEADERS)
+            ws_a = wb["StockAdjustments"]
+            adj_id = _next_id(ws_a)
+            ws_a.append([adj_id, pid, product_name, batch_id, batch_number, qty, unit_cost,
+                         total_value, reason, note, adjusted_by, datetime.now(), None])
+            _save(wb)
+        finally:
+            wb.close()
+    je_id = None
+    if reason != "entered_by_mistake" and total_value > 0:
+        je_id = post_journal(
+            f"Stock write-off: {qty} x {product_name or '#' + str(pid)} ({STOCK_ADJUST_REASONS[reason]})",
+            [{"account_id": acc["5500"], "debit": total_value},
+             {"account_id": acc["1200"], "credit": total_value}],
+            source_type="stock_adjustment", source_id=adj_id, created_by=adjusted_by)
+        with _lock:
+            wb = _open()
+            try:
+                for arow in wb["StockAdjustments"].iter_rows(min_row=2):
+                    if arow[0].value is not None and int(arow[0].value) == adj_id:
+                        arow[12].value = je_id
+                        break
+                _save(wb)
+            finally:
+                wb.close()
+    return {"adjustment_id": adj_id, "total_value": total_value,
+            "batch_deleted": batch_deleted, "journal_entry_id": je_id}
+
+
+def get_stock_adjustments(product_id=None):
+    """Adjustment history, newest first, optionally for one product."""
+    pid = int(product_id) if product_id is not None else None
+    with _lock:
+        wb = _open()
+        rows = []
+        if "StockAdjustments" in wb.sheetnames:
+            for row in wb["StockAdjustments"].iter_rows(min_row=2, values_only=True):
+                if row[0] is None:
+                    continue
+                a = _row_to_dict(STOCK_ADJUSTMENT_HEADERS, row)
+                if pid is not None and (a.get("product_id") is None or int(a["product_id"]) != pid):
+                    continue
+                rows.append(a)
+        wb.close()
+    rows.sort(key=lambda a: (a.get("adjusted_at") or datetime.min, int(a["adjustment_id"])), reverse=True)
+    return rows
 
 
 def get_low_stock_products(threshold=10):

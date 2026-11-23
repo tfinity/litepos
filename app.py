@@ -536,7 +536,42 @@ def product_detail(product_id):
         supplier = smap.get(int(b["supplier_id"])) if b.get("supplier_id") else None
         b["supplier_name"] = supplier["name"] if supplier else None
     batches.sort(key=lambda b: b["received_at"].isoformat() if b.get("received_at") else "", reverse=True)
-    return render_template("product_detail.html", product=product, batches=batches)
+    adjustments = excel_db.get_stock_adjustments(product_id)
+    return render_template("product_detail.html", product=product, batches=batches,
+                           adjustments=adjustments,
+                           adjust_reasons=excel_db.STOCK_ADJUST_REASONS)
+
+
+@app.route("/products/<int:product_id>/batches/<int:batch_id>/adjust", methods=["POST"])
+@login_required
+def batch_adjust(product_id, batch_id):
+    """Remove stock from a batch. Every removal is logged with the username."""
+    product = excel_db.get_product(product_id)
+    batch = next((b for b in excel_db.get_product_batches(product_id)
+                  if int(b["batch_id"]) == batch_id), None)
+    if not product or not batch:
+        flash("Batch not found.", "danger")
+        return redirect(url_for("product_detail", product_id=product_id))
+    if request.form.get("remove_all") == "1":
+        qty = int(batch.get("qty_remaining") or 0)
+    else:
+        qty = request.form.get("qty", "")
+    try:
+        res = excel_db.adjust_batch_stock(
+            batch_id, qty, request.form.get("reason", ""),
+            note=request.form.get("note", ""), adjusted_by=current_user.username)
+    except ValueError as e:
+        flash(str(e), "danger")
+        return redirect(url_for("product_detail", product_id=product_id))
+    app.logger.info("stock adjust: user=%s product=%s batch=%s qty=%s reason=%s",
+                    current_user.username, product_id, batch_id, qty, request.form.get("reason"))
+    msg = f"Removed stock from batch {batch.get('batch_number') or batch_id}."
+    if res["batch_deleted"]:
+        msg += " The empty batch was deleted."
+    if res["journal_entry_id"]:
+        msg += f" Written off {res['total_value']:,.2f} in the books."
+    flash(msg, "success")
+    return redirect(url_for("product_detail", product_id=product_id))
 
 
 # ── Reports ──────────────────────────────────────────────────────────

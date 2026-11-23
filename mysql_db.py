@@ -33,6 +33,7 @@ CHART_OF_ACCOUNTS = [
     ("5200", "Salaries",            "expense",   False),
     ("5300", "Utilities",           "expense",   False),
     ("5400", "Transport",           "expense",   False),
+    ("5500", "Stock Write-off",     "expense",   True),
     ("5900", "Miscellaneous",       "expense",   False),
 ]
 _DEBIT_NORMAL_TYPES = ("asset", "expense")
@@ -268,6 +269,30 @@ def init_workbook():
             """)
             try:
                 cur.execute("CREATE INDEX idx_product_batches_tenant_product ON product_batches (tenant_id, product_id)")
+            except Exception:
+                pass  # index already exists
+            # Audit trail for manual stock removals (who / when / why). No FKs on
+            # purpose: the history must survive deleting the batch or product.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS stock_adjustments (
+                    adjustment_id    INT AUTO_INCREMENT PRIMARY KEY,
+                    tenant_id        INT,
+                    product_id       INT NOT NULL,
+                    product_name     VARCHAR(255),
+                    batch_id         INT,
+                    batch_number     VARCHAR(100),
+                    qty_removed      INT,
+                    unit_cost        DECIMAL(12,2) DEFAULT 0,
+                    total_value      DECIMAL(12,2) DEFAULT 0,
+                    reason           VARCHAR(40),
+                    note             VARCHAR(500),
+                    adjusted_by      VARCHAR(100),
+                    adjusted_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    journal_entry_id INT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            try:
+                cur.execute("CREATE INDEX idx_stock_adjustments_tenant_product ON stock_adjustments (tenant_id, product_id)")
             except Exception:
                 pass  # index already exists
             cur.execute("""
@@ -703,6 +728,108 @@ def get_product_batches(product_id=None, active_only=False):
     for b in rows:
         b["expiry_date"] = _normalize_date(b.get("expiry_date"))
     return rows
+
+
+# ── Manual stock adjustments (remove stock from a batch) ─────────────
+
+STOCK_ADJUST_REASONS = {
+    "damaged": "Damaged",
+    "expired": "Expired",
+    "count_correction": "Stock count correction",
+    "entered_by_mistake": "Entered by mistake",
+    "other": "Other (note required)",
+}
+
+
+def adjust_batch_stock(batch_id, qty, reason, note="", adjusted_by="system"):
+    """Remove qty units from a batch, record who/when/why, and (except for
+    'entered_by_mistake') post Dr Stock Write-off / Cr Inventory for the cost.
+    A batch left empty with no purchase/sales/quotation links is deleted.
+    Returns {adjustment_id, total_value, batch_deleted, journal_entry_id}."""
+    reason = (reason or "").strip()
+    if reason not in STOCK_ADJUST_REASONS:
+        raise ValueError("Pick a reason.")
+    qty = _to_int(qty)
+    if qty <= 0:
+        raise ValueError("Enter a quantity greater than zero.")
+    note = (note or "").strip()[:500]
+    if reason == "other" and not note:
+        raise ValueError("Add a note explaining the reason.")
+    seed_chart_of_accounts()
+    acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
+    tid = _tid()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM product_batches WHERE batch_id=%s AND tenant_id=%s FOR UPDATE",
+                        (int(batch_id), tid))
+            b = cur.fetchone()
+            if not b:
+                raise ValueError("Batch not found.")
+            remaining = int(b["qty_remaining"] or 0)
+            if qty > remaining:
+                raise ValueError(f"Only {remaining} left in this batch; can't remove {qty}.")
+            if reason == "entered_by_mistake" and b.get("purchase_id"):
+                raise ValueError(
+                    f"This lot came from purchase PINV-{b['purchase_id']}. Fix or delete that "
+                    "purchase instead so the supplier balance and books stay right.")
+            pid = int(b["product_id"])
+            unit_cost = float(b["unit_cost"] or 0)
+            total_value = round(qty * unit_cost, 2)
+            cur.execute("SELECT name FROM products WHERE product_id=%s AND tenant_id=%s", (pid, tid))
+            prow = cur.fetchone()
+            new_remaining = remaining - qty
+            new_received = int(b["qty_received"] or 0)
+            if reason == "entered_by_mistake":
+                new_received = max(0, new_received - qty)
+            cur.execute("UPDATE product_batches SET qty_remaining=%s, qty_received=%s WHERE batch_id=%s AND tenant_id=%s",
+                        (new_remaining, new_received, int(batch_id), tid))
+            batch_deleted = False
+            if new_remaining == 0 and not b.get("purchase_id"):
+                cur.execute("""
+                    SELECT (SELECT COUNT(*) FROM invoice_items WHERE batch_id=%s AND tenant_id=%s)
+                         + (SELECT COUNT(*) FROM quotation_items WHERE batch_id=%s AND tenant_id=%s) AS refs
+                """, (int(batch_id), tid, int(batch_id), tid))
+                if int(cur.fetchone()["refs"] or 0) == 0:
+                    cur.execute("DELETE FROM product_batches WHERE batch_id=%s AND tenant_id=%s",
+                                (int(batch_id), tid))
+                    batch_deleted = True
+            _recompute_product_cache(cur, tid, pid)
+            cur.execute("""
+                INSERT INTO stock_adjustments
+                    (tenant_id, product_id, product_name, batch_id, batch_number, qty_removed,
+                     unit_cost, total_value, reason, note, adjusted_by, adjusted_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (tid, pid, prow["name"] if prow else None, int(batch_id), b.get("batch_number"),
+                  qty, unit_cost, total_value, reason, note, adjusted_by, datetime.now()))
+            adj_id = cur.lastrowid
+    je_id = None
+    if reason != "entered_by_mistake" and total_value > 0:
+        label = (prow["name"] if prow else f"#{pid}")
+        je_id = post_journal(
+            f"Stock write-off: {qty} x {label} ({STOCK_ADJUST_REASONS[reason]})",
+            [{"account_id": acc["5500"], "debit": total_value},
+             {"account_id": acc["1200"], "credit": total_value}],
+            source_type="stock_adjustment", source_id=adj_id, created_by=adjusted_by)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE stock_adjustments SET journal_entry_id=%s WHERE adjustment_id=%s AND tenant_id=%s",
+                            (je_id, adj_id, tid))
+    return {"adjustment_id": adj_id, "total_value": total_value,
+            "batch_deleted": batch_deleted, "journal_entry_id": je_id}
+
+
+def get_stock_adjustments(product_id=None):
+    """Adjustment history, newest first, optionally for one product."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            q = "SELECT * FROM stock_adjustments WHERE tenant_id = %s"
+            params = [_tid()]
+            if product_id is not None:
+                q += " AND product_id = %s"
+                params.append(int(product_id))
+            q += " ORDER BY adjusted_at DESC, adjustment_id DESC"
+            cur.execute(q, params)
+            return cur.fetchall()
 
 
 def get_low_stock_products(threshold=10):
