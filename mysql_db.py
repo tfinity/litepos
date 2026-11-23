@@ -1005,7 +1005,8 @@ def get_invoices_for_customer(customer_id):
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM invoices WHERE customer_id = %s AND tenant_id = %s ORDER BY invoice_id DESC",
+                "SELECT * FROM invoices WHERE customer_id = %s AND tenant_id = %s "
+                "AND (status != 'deleted' OR status IS NULL) ORDER BY invoice_id DESC",
                 (cid, _tid())
             )
             return cur.fetchall()
@@ -1024,6 +1025,7 @@ def get_customer_product_aggregates(customer_id):
                 FROM invoice_items ii
                 JOIN invoices i ON i.invoice_id = ii.invoice_id
                 WHERE i.customer_id = %s AND i.tenant_id = %s
+                  AND (i.status != 'deleted' OR i.status IS NULL)
                 GROUP BY ii.product_id, ii.product_name
                 ORDER BY ii.product_name
             """, (cid, _tid()))
