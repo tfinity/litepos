@@ -1019,6 +1019,39 @@ def get_invoices_for_customer(customer_id):
     ]
 
 
+def get_customer_invoice_items(customer_id):
+    """Every line sold to this customer (active invoices only), newest invoice
+    first. Powers the product <-> invoice search on the customer page."""
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        return []
+    inv_ids = {
+        int(inv["invoice_id"])
+        for inv in get_all_invoices()
+        if normalize_customer_id(inv.get("customer_id")) == cid
+    }
+    if not inv_ids:
+        return []
+    out = []
+    with _lock:
+        wb = _open()
+        for row in wb["InvoiceItems"].iter_rows(min_row=2, values_only=True):
+            if row[0] is None:
+                continue
+            item = _row_to_dict(ITEM_HEADERS, row)
+            if int(item["invoice_id"]) in inv_ids:
+                out.append({
+                    "invoice_id": int(item["invoice_id"]),
+                    "product_id": int(item["product_id"]),
+                    "product_name": item.get("product_name") or "",
+                    "quantity": int(item["quantity"] or 0),
+                    "line_total": float(item["line_total"] or 0),
+                })
+        wb.close()
+    out.sort(key=lambda x: -x["invoice_id"])  # stable: keeps line order within an invoice
+    return out
+
+
 def get_customer_product_aggregates(customer_id):
     """Total quantity and amount per product for all invoices of this customer."""
     cid = normalize_customer_id(customer_id)

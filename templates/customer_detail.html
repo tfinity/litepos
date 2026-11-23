@@ -82,14 +82,25 @@
     </div>
 </div>
 
+<div class="card mb-4 border-primary">
+    <div class="card-body py-3">
+        <label class="form-label fw-bold mb-1" for="custSearch"><i class="bi bi-search"></i> Search this customer's purchases</label>
+        <div class="input-group">
+            <input type="text" class="form-control" id="custSearch" autocomplete="off"
+                   placeholder="Product name, invoice number (e.g. INV-0007), date, payment..."
+                   oninput="filterCustomerPurchases()">
+            <button class="btn btn-outline-secondary" type="button" onclick="clearCustomerSearch()">Clear</button>
+        </div>
+        <div class="form-text" id="custSearchCount">
+            Type a product to see which invoices it was sold on, or an invoice number to see what was on it.
+        </div>
+    </div>
+</div>
+
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <strong>Products purchased (all invoices)</strong>
-        <div class="d-flex gap-2 align-items-center">
-            <input type="text" class="form-control form-control-sm" id="custProductsSearch" style="max-width:180px"
-                   placeholder="Search..." oninput="filterTable('custProductsSearch','custProductsTable')">
-            <span class="small text-muted text-nowrap">Line totals: {{ currency }} {{ "{:,.2f}".format(total_lines_amount) }}</span>
-        </div>
+        <span class="small text-muted text-nowrap">Line totals: {{ currency }} {{ "{:,.2f}".format(total_lines_amount) }}</span>
     </div>
     <div class="card-body p-0">
         {% if aggregates %}
@@ -100,6 +111,7 @@
                         <th>Product</th>
                         <th class="text-end">Total qty</th>
                         <th class="text-end">Amount ({{ currency }})</th>
+                        <th>Sold on invoices</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -108,6 +120,11 @@
                         <td>{{ row.product_name }}</td>
                         <td class="text-end">{{ row.total_qty }}</td>
                         <td class="text-end">{{ "{:,.2f}".format(row.total_amount) }}</td>
+                        <td class="small">
+                            {% for line in invoices_by_product.get(row.product_id, []) if line.product_name == row.product_name %}
+                            <a href="{{ url_for('invoice_detail', invoice_id=line.invoice_id) }}" class="text-nowrap me-2">INV-{{ "%04d"|format(line.invoice_id) }} <span class="text-muted">&times;{{ line.quantity }}</span></a>
+                            {% endfor %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -120,11 +137,7 @@
 </div>
 
 <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center gap-2">
-        <strong>Invoices</strong>
-        <input type="text" class="form-control form-control-sm" id="custInvoicesSearch" style="max-width:180px"
-               placeholder="Search..." oninput="filterTable('custInvoicesSearch','custInvoicesTable')">
-    </div>
+    <div class="card-header"><strong>Invoices</strong></div>
     <div class="card-body p-0">
         {% if invoices %}
         <div class="table-responsive">
@@ -133,6 +146,7 @@
                     <tr>
                         <th>Invoice</th>
                         <th>Date</th>
+                        <th>Items</th>
                         <th class="text-end">Total ({{ currency }})</th>
                         <th>Payment</th>
                         <th></th>
@@ -143,6 +157,9 @@
                     <tr>
                         <td><strong>INV-{{ "%04d"|format(inv.invoice_id) }}</strong></td>
                         <td>{{ inv.created_at.strftime('%Y-%m-%d %H:%M') if inv.created_at else '—' }}</td>
+                        <td class="small">
+                            {% for line in items_by_invoice.get(inv.invoice_id, []) %}{{ line.product_name }} <span class="text-muted">&times;{{ line.quantity }}</span>{{ ", " if not loop.last }}{% endfor %}
+                        </td>
                         <td class="text-end">{{ "{:,.2f}".format(inv.total) }}</td>
                         <td>
                             {% if inv.payment_method == 'Credit' %}
@@ -348,6 +365,30 @@
 </div>
 
 <script>
+function filterCustomerPurchases() {
+    const q = document.getElementById('custSearch').value.trim().toLowerCase();
+    const label = {custProductsTable: 'product', custInvoicesTable: 'invoice'};
+    const parts = [];
+    Object.keys(label).forEach(id => {
+        const table = document.getElementById(id);
+        if (!table) return;
+        const rows = table.querySelectorAll('tbody tr');
+        let shown = 0;
+        rows.forEach(row => {
+            const match = !q || row.textContent.toLowerCase().includes(q);
+            row.style.display = match ? '' : 'none';
+            if (match) shown++;
+        });
+        parts.push(shown + ' of ' + rows.length + ' ' + label[id] + (rows.length === 1 ? '' : 's'));
+    });
+    document.getElementById('custSearchCount').textContent =
+        q ? 'Showing ' + parts.join(' and ') + '.' :
+            'Type a product to see which invoices it was sold on, or an invoice number to see what was on it.';
+}
+function clearCustomerSearch() {
+    document.getElementById('custSearch').value = '';
+    filterCustomerPurchases();
+}
 document.querySelectorAll('.edit-payment-btn').forEach(btn => {
     btn.addEventListener('click', function() {
         const eid = this.getAttribute('data-entry-id');

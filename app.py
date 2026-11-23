@@ -1273,6 +1273,13 @@ def customer_detail(customer_id):
         return redirect(url_for("customers_list"))
     invoices = excel_db.get_invoices_for_customer(customer_id)
     aggregates = excel_db.get_customer_product_aggregates(customer_id)
+    # Cross-reference for the search box: product -> invoices, invoice -> products.
+    items_by_invoice = {}
+    invoices_by_product = {}
+    for line in excel_db.get_customer_invoice_items(customer_id):
+        iid, pid = int(line["invoice_id"]), int(line["product_id"])
+        items_by_invoice.setdefault(iid, []).append(line)
+        invoices_by_product.setdefault(pid, []).append(line)
     total_qty = sum(a["total_qty"] for a in aggregates)
     total_lines_amount = sum(a["total_amount"] for a in aggregates)
     revenue = sum(float(i["total"] or 0) for i in invoices)
@@ -1290,6 +1297,8 @@ def customer_detail(customer_id):
         customer=customer,
         invoices=invoices,
         aggregates=aggregates,
+        items_by_invoice=items_by_invoice,
+        invoices_by_product=invoices_by_product,
         total_qty=total_qty,
         total_lines_amount=round(total_lines_amount, 2),
         revenue=round(revenue, 2),

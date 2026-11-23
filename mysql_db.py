@@ -1012,6 +1012,25 @@ def get_invoices_for_customer(customer_id):
             return cur.fetchall()
 
 
+def get_customer_invoice_items(customer_id):
+    """Every line sold to this customer (active invoices only), newest invoice
+    first. Powers the product <-> invoice search on the customer page."""
+    cid = normalize_customer_id(customer_id)
+    if cid is None:
+        return []
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT ii.invoice_id, ii.product_id, ii.product_name, ii.quantity, ii.line_total
+                FROM invoice_items ii
+                JOIN invoices i ON i.invoice_id = ii.invoice_id AND i.tenant_id = ii.tenant_id
+                WHERE i.customer_id = %s AND i.tenant_id = %s
+                  AND (i.status != 'deleted' OR i.status IS NULL)
+                ORDER BY ii.invoice_id DESC, ii.item_id
+            """, (cid, _tid()))
+            return cur.fetchall()
+
+
 def get_customer_product_aggregates(customer_id):
     cid = normalize_customer_id(customer_id)
     if cid is None:
