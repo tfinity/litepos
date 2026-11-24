@@ -135,6 +135,7 @@ STOCK_ADJUSTMENT_HEADERS = [
     "adjustment_id", "product_id", "product_name", "batch_id", "batch_number",
     "qty_removed", "unit_cost", "total_value", "reason", "note",
     "adjusted_by", "adjusted_at", "journal_entry_id",
+    "kind",  # 'remove' (or blank, older rows) / 'add'; must be last for backward compat
 ]
 QUOTATION_HEADERS = [
     "quotation_id", "created_at", "customer_id", "subtotal", "discount_total",
@@ -308,6 +309,11 @@ def ensure_workbook_schema():
         if "StockAdjustments" not in wb.sheetnames:
             wb.create_sheet("StockAdjustments").append(STOCK_ADJUSTMENT_HEADERS)
             changed = True
+        else:
+            ws_sa = wb["StockAdjustments"]
+            if ws_sa.cell(row=1, column=len(STOCK_ADJUSTMENT_HEADERS)).value != "kind":
+                ws_sa.cell(row=1, column=len(STOCK_ADJUSTMENT_HEADERS)).value = "kind"
+                changed = True
         if "Quotations" not in wb.sheetnames:
             wb.create_sheet("Quotations").append(QUOTATION_HEADERS)
             changed = True
@@ -782,7 +788,7 @@ def adjust_batch_stock(batch_id, qty, reason, note="", adjusted_by="system"):
             ws_a = wb["StockAdjustments"]
             adj_id = _next_id(ws_a)
             ws_a.append([adj_id, pid, product_name, batch_id, batch_number, qty, unit_cost,
-                         total_value, reason, note, adjusted_by, datetime.now(), None])
+                         total_value, reason, note, adjusted_by, datetime.now(), None, "remove"])
             _save(wb)
         finally:
             wb.close()
@@ -805,6 +811,90 @@ def adjust_batch_stock(batch_id, qty, reason, note="", adjusted_by="system"):
                 wb.close()
     return {"adjustment_id": adj_id, "total_value": total_value,
             "batch_deleted": batch_deleted, "journal_entry_id": je_id}
+
+
+STOCK_ADD_REASONS = {
+    "count_correction": "Stock count correction (found extra)",
+    "customer_return": "Returned by customer",
+    "opening_missed": "Opening stock missed",
+    "other": "Other (note required)",
+}
+
+
+def add_batch_stock(product_id, qty, unit_cost, reason, note="", expiry_date=None, added_by="system"):
+    """Add stock that did not come through a purchase: creates a new batch at
+    unit_cost, logs who/when/why, and posts Dr Inventory / Cr Stock Write-off
+    (a gain) for qty x cost. Stock bought from a supplier belongs under
+    Purchases instead. Returns {adjustment_id, batch_id, total_value, journal_entry_id}."""
+    reason = (reason or "").strip()
+    if reason not in STOCK_ADD_REASONS:
+        raise ValueError("Pick a reason.")
+    qty = _to_int(qty)
+    if qty <= 0:
+        raise ValueError("Enter a quantity greater than zero.")
+    unit_cost = _to_float(unit_cost, default=-1)
+    if unit_cost < 0:
+        raise ValueError("Enter the cost per unit (0 if unknown).")
+    note = (note or "").strip()[:500]
+    if reason == "other" and not note:
+        raise ValueError("Add a note explaining the reason.")
+    expiry = None
+    if isinstance(expiry_date, str) and expiry_date.strip():
+        try:
+            expiry = datetime.strptime(expiry_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise ValueError("Expiry date is not valid.")
+    pid = int(product_id)
+    seed_chart_of_accounts()
+    acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
+    _ensure_legacy_batches()  # so existing stock is a batch before we blend in the new one
+    total_value = round(qty * unit_cost, 2)
+    now = datetime.now()
+    with _lock:
+        wb = _open()
+        try:
+            product_name = None
+            for prow in wb["Products"].iter_rows(min_row=2, values_only=True):
+                if prow[0] is not None and int(prow[0]) == pid:
+                    product_name = prow[1]
+                    break
+            if product_name is None:
+                raise ValueError("Product not found.")
+            if "ProductBatches" not in wb.sheetnames:
+                wb.create_sheet("ProductBatches").append(BATCH_HEADERS)
+            ws_b = wb["ProductBatches"]
+            batch_id = _next_id(ws_b)
+            batch_number = f"P{pid}-ADJ-{batch_id}"
+            ws_b.append([batch_id, pid, batch_number, None, None, unit_cost, qty, qty, expiry, now])
+            _recompute_product_cache(wb, pid)
+            if "StockAdjustments" not in wb.sheetnames:
+                wb.create_sheet("StockAdjustments").append(STOCK_ADJUSTMENT_HEADERS)
+            ws_a = wb["StockAdjustments"]
+            adj_id = _next_id(ws_a)
+            ws_a.append([adj_id, pid, product_name, batch_id, batch_number, qty, unit_cost,
+                         total_value, reason, note, added_by, now, None, "add"])
+            _save(wb)
+        finally:
+            wb.close()
+    je_id = None
+    if total_value > 0:
+        je_id = post_journal(
+            f"Stock added: {qty} x {product_name} ({STOCK_ADD_REASONS[reason]})",
+            [{"account_id": acc["1200"], "debit": total_value},
+             {"account_id": acc["5500"], "credit": total_value}],
+            source_type="stock_adjustment", source_id=adj_id, created_by=added_by)
+        with _lock:
+            wb = _open()
+            try:
+                for arow in wb["StockAdjustments"].iter_rows(min_row=2):
+                    if arow[0].value is not None and int(arow[0].value) == adj_id:
+                        arow[12].value = je_id
+                        break
+                _save(wb)
+            finally:
+                wb.close()
+    return {"adjustment_id": adj_id, "batch_id": batch_id,
+            "total_value": total_value, "journal_entry_id": je_id}
 
 
 def get_stock_adjustments(product_id=None):

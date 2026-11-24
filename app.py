@@ -539,7 +539,36 @@ def product_detail(product_id):
     adjustments = excel_db.get_stock_adjustments(product_id)
     return render_template("product_detail.html", product=product, batches=batches,
                            adjustments=adjustments,
-                           adjust_reasons=excel_db.STOCK_ADJUST_REASONS)
+                           adjust_reasons=excel_db.STOCK_ADJUST_REASONS,
+                           add_reasons=excel_db.STOCK_ADD_REASONS)
+
+
+@app.route("/products/<int:product_id>/stock/add", methods=["POST"])
+@login_required
+@admin_required
+def stock_add(product_id):
+    """Add stock that didn't come through a purchase. Admin only; logged with the username."""
+    if not excel_db.get_product(product_id):
+        flash("Product not found.", "danger")
+        return redirect(url_for("products"))
+    try:
+        res = excel_db.add_batch_stock(
+            product_id, request.form.get("qty", ""), request.form.get("unit_cost", ""),
+            request.form.get("reason", ""), note=request.form.get("note", ""),
+            expiry_date=request.form.get("expiry_date", ""), added_by=current_user.username)
+    except ValueError as e:
+        flash(str(e), "danger")
+        return redirect(url_for("product_detail", product_id=product_id))
+    app.logger.info("stock add: user=%s product=%s qty=%s cost=%s reason=%s",
+                    current_user.username, product_id, request.form.get("qty"),
+                    request.form.get("unit_cost"), request.form.get("reason"))
+    msg = "Stock added in a new batch."
+    if res["journal_entry_id"]:
+        msg += f" {res['total_value']:,.2f} added to Inventory in the books."
+    else:
+        msg += " Cost was 0, so nothing was booked."
+    flash(msg, "success")
+    return redirect(url_for("product_detail", product_id=product_id))
 
 
 @app.route("/products/<int:product_id>/batches/<int:batch_id>/adjust", methods=["POST"])

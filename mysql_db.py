@@ -288,9 +288,14 @@ def init_workbook():
                     note             VARCHAR(500),
                     adjusted_by      VARCHAR(100),
                     adjusted_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    journal_entry_id INT
+                    journal_entry_id INT,
+                    kind             VARCHAR(10) DEFAULT 'remove'
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            try:
+                cur.execute("ALTER TABLE stock_adjustments ADD COLUMN kind VARCHAR(10) DEFAULT 'remove'")
+            except Exception:
+                pass  # column already exists
             try:
                 cur.execute("CREATE INDEX idx_stock_adjustments_tenant_product ON stock_adjustments (tenant_id, product_id)")
             except Exception:
@@ -816,6 +821,83 @@ def adjust_batch_stock(batch_id, qty, reason, note="", adjusted_by="system"):
                             (je_id, adj_id, tid))
     return {"adjustment_id": adj_id, "total_value": total_value,
             "batch_deleted": batch_deleted, "journal_entry_id": je_id}
+
+
+STOCK_ADD_REASONS = {
+    "count_correction": "Stock count correction (found extra)",
+    "customer_return": "Returned by customer",
+    "opening_missed": "Opening stock missed",
+    "other": "Other (note required)",
+}
+
+
+def add_batch_stock(product_id, qty, unit_cost, reason, note="", expiry_date=None, added_by="system"):
+    """Add stock that did not come through a purchase: creates a new batch at
+    unit_cost, logs who/when/why, and posts Dr Inventory / Cr Stock Write-off
+    (a gain) for qty x cost. Stock bought from a supplier belongs under
+    Purchases instead. Returns {adjustment_id, batch_id, total_value, journal_entry_id}."""
+    reason = (reason or "").strip()
+    if reason not in STOCK_ADD_REASONS:
+        raise ValueError("Pick a reason.")
+    qty = _to_int(qty)
+    if qty <= 0:
+        raise ValueError("Enter a quantity greater than zero.")
+    unit_cost = _to_float(unit_cost, default=-1)
+    if unit_cost < 0:
+        raise ValueError("Enter the cost per unit (0 if unknown).")
+    note = (note or "").strip()[:500]
+    if reason == "other" and not note:
+        raise ValueError("Add a note explaining the reason.")
+    expiry = None
+    if isinstance(expiry_date, str) and expiry_date.strip():
+        try:
+            expiry = datetime.strptime(expiry_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise ValueError("Expiry date is not valid.")
+    pid = int(product_id)
+    seed_chart_of_accounts()
+    acc = {str(a["code"]): a["account_id"] for a in get_all_accounts()}
+    _ensure_legacy_batches()  # so existing stock is a batch before we blend in the new one
+    tid = _tid()
+    total_value = round(qty * unit_cost, 2)
+    now = datetime.now()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM products WHERE product_id=%s AND tenant_id=%s", (pid, tid))
+            prow = cur.fetchone()
+            if not prow:
+                raise ValueError("Product not found.")
+            cur.execute("""
+                INSERT INTO product_batches
+                    (tenant_id, product_id, batch_number, supplier_id, purchase_id,
+                     unit_cost, qty_received, qty_remaining, expiry_date, received_at)
+                VALUES (%s, %s, %s, NULL, NULL, %s, %s, %s, %s, %s)
+            """, (tid, pid, "ADJ", unit_cost, qty, qty, expiry, now))
+            batch_id = cur.lastrowid
+            batch_number = f"P{pid}-ADJ-{batch_id}"
+            cur.execute("UPDATE product_batches SET batch_number=%s WHERE batch_id=%s", (batch_number, batch_id))
+            _recompute_product_cache(cur, tid, pid)
+            cur.execute("""
+                INSERT INTO stock_adjustments
+                    (tenant_id, product_id, product_name, batch_id, batch_number, qty_removed,
+                     unit_cost, total_value, reason, note, adjusted_by, adjusted_at, kind)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'add')
+            """, (tid, pid, prow["name"], batch_id, batch_number, qty, unit_cost, total_value,
+                  reason, note, added_by, now))
+            adj_id = cur.lastrowid
+    je_id = None
+    if total_value > 0:
+        je_id = post_journal(
+            f"Stock added: {qty} x {prow['name']} ({STOCK_ADD_REASONS[reason]})",
+            [{"account_id": acc["1200"], "debit": total_value},
+             {"account_id": acc["5500"], "credit": total_value}],
+            source_type="stock_adjustment", source_id=adj_id, created_by=added_by)
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE stock_adjustments SET journal_entry_id=%s WHERE adjustment_id=%s AND tenant_id=%s",
+                            (je_id, adj_id, tid))
+    return {"adjustment_id": adj_id, "batch_id": batch_id,
+            "total_value": total_value, "journal_entry_id": je_id}
 
 
 def get_stock_adjustments(product_id=None):
